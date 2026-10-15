@@ -1,0 +1,226 @@
+"""The Wedge Send dialog: the parms to wedge and their values, the frames, the
+camera, and how the job is named and run."""
+
+from __future__ import annotations
+
+import math
+import shlex
+from collections.abc import Callable
+from dataclasses import dataclass
+
+import hou
+from Qt import QtGui, QtWidgets
+
+from pipe.core.ui.dialogs import DialogButtons
+from pipe.dcc.houdini.tractor import SendRefused
+from pipe.dcc.houdini.tractor.cache_dialog import BLADES, PRIORITY
+from pipe.dcc.houdini.tractor.wedges import Camera, Wedge
+
+# A parm path and the values typed for it.
+Row = tuple[str, str]
+# Turns the rows into wedges, or raises SendRefused saying what is wrong.
+Check = Callable[[list[Row]], list[Wedge]]
+
+# One wedge is just a farm sim.
+MINIMUM = 2
+_WIDTH = 520
+
+
+@dataclass(frozen=True)
+class WedgeChoice:
+    title: str
+    priority: int
+    service: str
+    start: int
+    end: int
+    camera: Camera
+    wedges: list[Wedge]
+    # As typed, so the next dialog for this node starts from them.
+    rows: list[Row]
+
+
+def prompt(
+    parent: QtWidgets.QWidget | None,
+    node: hou.Node,
+    title: str,
+    frames: tuple[int, int],
+    cameras: list[Camera],
+    rows: list[Row],
+    check: Check,
+) -> WedgeChoice | None:
+    """Open the dialog. None means send nothing. `cameras[0]` is the default."""
+    dialog = _WedgeDialog(parent, node, title, frames, cameras, rows, check)
+    if not dialog.exec_():
+        return None
+    return dialog.choice()
+
+
+def count(rows: list[Row]) -> int:
+    """How many wedges the rows make, before their values are checked."""
+    sizes = []
+    for path, values in rows:
+        if not path.strip():
+            continue
+        try:
+            sizes.append(len(shlex.split(values)))
+        except ValueError:
+            # An unclosed quote, which Send explains.
+            sizes.append(0)
+    return math.prod(sizes) if sizes else 0
+
+
+class _ParmField(QtWidgets.QLineEdit):
+    """Takes a parm dragged from the parameter pane."""
+
+    def __init__(self, text: str) -> None:
+        super().__init__(text)
+        self.setPlaceholderText("Drag a parm here")
+
+    # Qt's stubs name the event `arg__1`, hence the override ignores. hou.qt
+    # is Houdini's own Python, which the hou stubs leave out.
+    def dragEnterEvent(
+        self, event: QtGui.QDragEnterEvent
+    ) -> None:  # ty: ignore[invalid-method-override]
+        kind = hou.qt.mimeType.parmPath  # ty: ignore[unresolved-attribute]
+        if event.mimeData().hasFormat(kind):
+            event.acceptProposedAction()
+        else:
+            super().dragEnterEvent(event)
+
+    def dropEvent(
+        self, event: QtGui.QDropEvent
+    ) -> None:  # ty: ignore[invalid-method-override]
+        kind = hou.qt.mimeType.parmPath  # ty: ignore[unresolved-attribute]
+        data = event.mimeData().data(kind)
+        if data.isEmpty():
+            super().dropEvent(event)
+            return
+        # Several dragged parms come separated by tabs; a row holds one.
+        self.setText(bytes(data.data()).decode().split("\t")[0])
+        event.acceptProposedAction()
+
+
+def _choose(field: QtWidgets.QLineEdit, chosen: list[hou.Parm | None]) -> None:
+    # Houdini's chooser sends a list, empty when it is cancelled.
+    if chosen and chosen[0] is not None:
+        field.setText(chosen[0].path())
+
+
+class _WedgeDialog(QtWidgets.QDialog, DialogButtons):
+    def __init__(
+        self,
+        parent: QtWidgets.QWidget | None,
+        node: hou.Node,
+        title: str,
+        frames: tuple[int, int],
+        cameras: list[Camera],
+        rows: list[Row],
+        check: Check,
+    ) -> None:
+        super().__init__(parent)
+        self._init_buttons(True, "Send", "Cancel")
+        self.setWindowTitle(f"Wedge {node.name()} on Tractor")
+        self.setMinimumWidth(_WIDTH)
+        self._default_title = title
+        self._cameras = cameras
+        self._check = check
+        self._wedges: list[Wedge] = []
+        self._fields: list[tuple[_ParmField, QtWidgets.QLineEdit]] = []
+
+        self._title = QtWidgets.QLineEdit()
+        self._title.setPlaceholderText(title)
+
+        low, high, default = PRIORITY
+        self._priority = QtWidgets.QSpinBox()
+        self._priority.setRange(low, high)
+        self._priority.setValue(default)
+
+        self._blades = QtWidgets.QComboBox()
+        self._blades.addItems(list(BLADES))
+
+        self._start = QtWidgets.QSpinBox()
+        self._end = QtWidgets.QSpinBox()
+        frame_row = QtWidgets.QHBoxLayout()
+        for box, value in ((self._start, frames[0]), (self._end, frames[1])):
+            box.setRange(-100000, 100000)
+            box.setValue(value)
+            box.valueChanged.connect(self._update_count)
+            frame_row.addWidget(box)
+        frame_row.addStretch(1)
+
+        self._camera = QtWidgets.QComboBox()
+        self._camera.addItems([camera.path for camera in cameras])
+
+        self._grid = QtWidgets.QGridLayout()
+        self._grid.setContentsMargins(0, 0, 0, 0)
+        for path, values in rows or [("", "")]:
+            self._add_row(path, values)
+        add = QtWidgets.QPushButton("Add Parm")
+        add.clicked.connect(lambda: self._add_row("", ""))
+        wedge_column = QtWidgets.QVBoxLayout()
+        wedge_column.addLayout(self._grid)
+        wedge_column.addWidget(add)
+        self._count = QtWidgets.QLabel()
+
+        form = QtWidgets.QFormLayout()
+        form.addRow("Title", self._title)
+        form.addRow("Priority", self._priority)
+        form.addRow("Blades", self._blades)
+        form.addRow("Frames", frame_row)
+        form.addRow("Camera", self._camera)
+        form.addRow("Wedge", wedge_column)
+        form.addRow("", self._count)
+
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.addLayout(form)
+        layout.addWidget(self.buttons)
+        self._update_count()
+
+    def _add_row(self, path: str, values: str) -> None:
+        parm = _ParmField(path)
+        chooser = hou.qt.ParmChooserButton()  # ty: ignore[unresolved-attribute]
+        chooser.parmSelected.connect(lambda chosen: _choose(parm, chosen))
+        value_field = QtWidgets.QLineEdit(values)
+        value_field.setPlaceholderText("Values, like 0.5 1 2")
+        for field in (parm, value_field):
+            field.textChanged.connect(self._update_count)
+        row = self._grid.rowCount()
+        self._grid.addWidget(parm, row, 0)
+        self._grid.addWidget(chooser, row, 1)
+        self._grid.addWidget(value_field, row, 2)
+        self._fields.append((parm, value_field))
+
+    def rows(self) -> list[Row]:
+        return [
+            (parm.text().strip(), values.text().strip())
+            for parm, values in self._fields
+            if parm.text().strip() or values.text().strip()
+        ]
+
+    def _update_count(self) -> None:
+        total = count(self.rows())
+        self._count.setText(f"{total} wedge" if total == 1 else f"{total} wedges")
+        send = self.buttons.button(QtWidgets.QDialogButtonBox.Ok)
+        send.setEnabled(total >= MINIMUM and self._start.value() <= self._end.value())
+
+    def accept(self) -> None:
+        try:
+            self._wedges = self._check(self.rows())
+        except SendRefused as refusal:
+            # The dialog stays open, so the rows aren't typed again.
+            QtWidgets.QMessageBox.warning(self, self.windowTitle(), str(refusal))
+            return
+        super().accept()
+
+    def choice(self) -> WedgeChoice:
+        return WedgeChoice(
+            title=self._title.text().strip() or self._default_title,
+            priority=self._priority.value(),
+            service=BLADES[self._blades.currentText()],
+            start=self._start.value(),
+            end=self._end.value(),
+            camera=self._cameras[self._camera.currentIndex()],
+            wedges=self._wedges,
+            rows=self.rows(),
+        )

@@ -27,13 +27,18 @@ STEP_TOLERANCE = 1e-6
 
 def main(argv: list[str] | None = None) -> int:
     args = _parse(argv)
-    _load(args.snapshot, args.hip)
-    rop = _rop(args.node)
-    files = [_output(rop, frame) for frame in _frames(rop, args.start, args.end)]
+    load(args.snapshot, args.hip)
+    return write(args.node, args.start, args.end)
+
+
+def write(path: str, start: float, end: float) -> int:
+    """Write the File Cache at `path` from `start` to `end`. The exit code."""
+    rop = _rop(path)
+    files = [_output(rop, frame) for frame in _frames(rop, start, end)]
     for file in files:
         file.unlink(missing_ok=True)
     if rop.evalParm("trange"):
-        rop.render(frame_range=(args.start, args.end), output_progress=True)
+        rop.render(frame_range=(start, end), output_progress=True)
     else:
         rop.render(output_progress=True)
     unreadable = [file for file in files if not _loads(file)]
@@ -41,11 +46,11 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Not written, or not readable: {file}", file=sys.stderr)
     if unreadable:
         print(
-            f"{len(unreadable)} of {len(files)} frames of {args.node} failed.",
+            f"{len(unreadable)} of {len(files)} frames of {path} failed.",
             file=sys.stderr,
         )
         return 1
-    print(f"Wrote {len(files)} frames of {args.node}.")
+    print(f"Wrote {len(files)} frames of {path}.")
     return 0
 
 
@@ -59,7 +64,7 @@ def _parse(argv: list[str] | None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def _load(snapshot: Path, hip: Path) -> None:
+def load(snapshot: Path, hip: Path) -> None:
     """Load the snapshot as if it were the artist's hip."""
     try:
         hou.hipFile.load(str(snapshot), suppress_save_prompt=True)

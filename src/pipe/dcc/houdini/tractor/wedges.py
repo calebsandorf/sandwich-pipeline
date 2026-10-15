@@ -1,0 +1,180 @@
+"""A wedge run's record, `wedge.json`, and what the Send, the blade and review
+each do with it: read wedged values, set them, and point the cache at a wedge's
+folder.
+
+    <hip>/geo/.tractor/<node>/v003/
+    ├── scene.hipnc         the snapshot every task loads
+    ├── wedge.json          the record: what was wedged, over which frames
+    ├── w01/                the cache of the first wedge
+    │   └── flipbook/       its HUD-burned frames, there once they are all written
+    └── w02/
+"""
+
+from __future__ import annotations
+
+import itertools
+import json
+import shlex
+from dataclasses import dataclass
+from pathlib import Path, PurePosixPath
+
+import hou
+
+RECORD = "wedge.json"
+FLIPBOOK = "flipbook"
+# The frames' file name before the frame number, as the viewer reads them.
+FRAMES = "flipbook"
+# The shot camera prim of every published shot.
+SHOT_CAMERA = "/cameras/shotCam"
+# File Cache 2.0 builds its path from a base folder, unless it is given a file.
+CONSTRUCTED = 0
+
+Value = float | int | str
+
+
+@dataclass(frozen=True)
+class Camera:
+    # An /obj camera node, or a camera prim on the stage of `lop`.
+    path: str
+    lop: str | None = None
+
+
+@dataclass(frozen=True)
+class Wedge:
+    name: str
+    # The value of each wedged parm, by its path.
+    values: dict[str, Value]
+
+
+@dataclass(frozen=True)
+class Run:
+    title: str
+    snapshot: Path
+    hip: Path
+    node: str
+    start: int
+    end: int
+    fps: float
+    camera: Camera
+    wedges: list[Wedge]
+
+    @property
+    def folder(self) -> Path:
+        return self.snapshot.parent
+
+
+def write_record(run: Run) -> Path:
+    path = run.folder / RECORD
+    data = {
+        "title": run.title,
+        "snapshot": str(run.snapshot),
+        "hip": str(run.hip),
+        "node": run.node,
+        "frames": [run.start, run.end],
+        "fps": run.fps,
+        "camera": {"path": run.camera.path, "lop": run.camera.lop},
+        "wedges": [{"name": w.name, "values": w.values} for w in run.wedges],
+    }
+    path.write_text(json.dumps(data, indent=2))
+    return path
+
+
+def read_record(path: Path) -> Run:
+    data = json.loads(path.read_text())
+    start, end = data["frames"]
+    return Run(
+        title=data["title"],
+        snapshot=Path(data["snapshot"]),
+        hip=Path(data["hip"]),
+        node=data["node"],
+        start=start,
+        end=end,
+        fps=data["fps"],
+        camera=Camera(**data["camera"]),
+        wedges=[Wedge(w["name"], w["values"]) for w in data["wedges"]],
+    )
+
+
+def parse(parm: hou.Parm, text: str) -> list[Value]:
+    """The values typed for `parm`, separated by spaces. Raises ValueError,
+    worded for the artist."""
+    tokens = shlex.split(text)
+    if not tokens:
+        raise ValueError(f"Type the values to wedge {label(parm.path())} with.")
+    return [_value(parm, token) for token in tokens]
+
+
+def _value(parm: hou.Parm, token: str) -> Value:
+    kind = parm.parmTemplate().type()
+    menu = parm.menuItems() if kind in _MENUS else ()
+    try:
+        if token in menu:
+            return token if kind == hou.parmTemplateType.Menu else menu.index(token)
+        if kind == hou.parmTemplateType.Float:
+            return float(token)
+        if kind in (hou.parmTemplateType.Int, hou.parmTemplateType.Toggle):
+            return int(token)
+        if kind == hou.parmTemplateType.String:
+            return token
+    except ValueError:
+        pass
+    expected = f"one of {', '.join(menu)}" if menu else _EXPECTED.get(kind, "")
+    if not expected:
+        raise ValueError(f"{label(parm.path())} is not a parm that can be wedged.")
+    raise ValueError(f"{token} is not a value of {label(parm.path())}: use {expected}.")
+
+
+_MENUS = (hou.parmTemplateType.Int, hou.parmTemplateType.Menu)
+_EXPECTED = {
+    hou.parmTemplateType.Float: "numbers",
+    hou.parmTemplateType.Int: "whole numbers",
+    hou.parmTemplateType.Toggle: "0 or 1",
+}
+
+
+def combine(rows: list[tuple[str, list[Value]]]) -> list[Wedge]:
+    """One wedge for each combination of the rows' values."""
+    paths = [path for path, _ in rows]
+    combos = itertools.product(*(values for _, values in rows))
+    return [
+        Wedge(f"w{index:02}", dict(zip(paths, combo, strict=True)))
+        for index, combo in enumerate(combos, start=1)
+    ]
+
+
+def set_values(wedge: Wedge) -> list[str]:
+    """Set the wedge's values in the scene. The paths of parms it no longer has."""
+    missing = []
+    for path, value in wedge.values.items():
+        parm = hou.parm(path)
+        if parm is None:
+            missing.append(path)
+            continue
+        # A keyframe or an expression would override the value.
+        parm.deleteAllKeyframes()
+        parm.set(value)
+    return missing
+
+
+def redirect(node: hou.Node, folder: Path) -> None:
+    """Point the File Cache's output into `folder`, keeping its own file names."""
+    if node.evalParm("filemethod") == CONSTRUCTED:
+        node.setParms({"basedir": str(folder)})
+        return
+    # Unexpanded, so the name keeps its $OS and $F.
+    file = node.parm("file").unexpandedString()  # ty: ignore[unresolved-attribute]
+    node.setParms({"file": str(folder / PurePosixPath(file).name)})
+
+
+def label(path: str) -> str:
+    """A parm by its node's name, which is how the artist knows it."""
+    node, _, parm = path.rpartition("/")
+    return f"{node.rpartition('/')[2]}/{parm}"
+
+
+def describe(wedge: Wedge) -> list[str]:
+    return [f"{label(path)} {_text(v)}" for path, v in wedge.values.items()]
+
+
+def _text(value: Value) -> str:
+    return f"{value:g}" if isinstance(value, float) else str(value)

@@ -15,6 +15,13 @@ one per chunk of frames otherwise:
     Cache <node>            for each Cache first cache, upstream first
     Cache <node>            the cache that was sent
 
+A wedge Send's job flipbooks each wedge once its sim is written:
+
+    Flipbook w01
+    └── Sim w01
+    Flipbook w02
+    └── Sim w02
+
 Every task is one command from `commands.py`. Titles carry the layer, so they
 are unique within the job, which Instances rely on.
 """
@@ -24,7 +31,7 @@ from __future__ import annotations
 import tractor.api.author as author
 
 from pipe.dcc.houdini.tractor import commands
-from pipe.dcc.houdini.tractor.commands import Cache, Layer
+from pipe.dcc.houdini.tractor.commands import Cache, Layer, Wedges
 
 # Tractor runs a command only on blades that offer its service. Every blade
 # offers EL9, and each offers the name of its profile.
@@ -107,6 +114,20 @@ def cache_job(
         for start, end in cache.chunks:
             script = commands.cache(cache, start, end)
             task.addChild(_task(f"{name} {start:g}-{end:g}", script, service=service))
+        job.addChild(task)
+    return job
+
+
+def wedge_job(
+    title: str, priority: int, service: str, spec: Wedges, names: list[str]
+) -> author.Job:
+    """No task is retried, as in `cache_job`."""
+    job = author.Job(title=title, priority=priority)
+    for name in names:
+        sim = commands.wedge(spec, name, commands.WEDGE_SIM)
+        draw = commands.wedge(spec, name, commands.WEDGE_FLIPBOOK)
+        task = _task(f"Flipbook {name}", draw, service=service)
+        task.addChild(_task(f"Sim {name}", sim, service=service))
         job.addChild(task)
     return job
 

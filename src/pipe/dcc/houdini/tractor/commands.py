@@ -25,6 +25,10 @@ HUSK_SEGFAULT = "Fatal error: Segmentation fault"
 SEGFAULT_EXIT = 139
 # Run by hython on the blade: writes one File Cache from a Send's snapshot.
 CACHE_MODULE = "pipe.dcc.houdini.tractor.cache"
+# Run by hython on the blade: sims or flipbooks one wedge of a Wedge Send.
+WEDGE_MODULE = "pipe.dcc.houdini.tractor.wedge"
+WEDGE_SIM = "sim"
+WEDGE_FLIPBOOK = "flipbook"
 # RenderMan's denoiser reads this many frames either side of each frame.
 DENOISE_RADIUS = 3
 
@@ -65,6 +69,13 @@ class Cache:
     # The start and end frame of each task that writes the node.
     chunks: list[tuple[float, float]]
     # The session's variables, which hython needs to load the hip as it did.
+    env: dict[str, str]
+
+
+@dataclass(frozen=True)
+class Wedges:
+    # The run's wedge.json, which holds everything else a task needs.
+    record: Path
     env: dict[str, str]
 
 
@@ -135,10 +146,18 @@ def cache(spec: Cache, start: float, end: float) -> str:
         f"{start:g}",
         f"{end:g}",
     ]
-    exports = [
-        f"export {name}={shlex.quote(value)}" for name, value in spec.env.items()
-    ]
-    return "\n".join([*exports, shlex.join(hython)])
+    return "\n".join([*_exports(spec.env), shlex.join(hython)])
+
+
+def wedge(spec: Wedges, name: str, step: str) -> str:
+    """One step of one wedge, `WEDGE_SIM` or `WEDGE_FLIPBOOK`. Exported like
+    `cache`, and failing with hython's exit code."""
+    hython = ["hython", "-m", WEDGE_MODULE, str(spec.record), name, step]
+    return "\n".join([*_exports(spec.env), shlex.join(hython)])
+
+
+def _exports(env: dict[str, str]) -> list[str]:
+    return [f"export {name}={shlex.quote(value)}" for name, value in env.items()]
 
 
 def denoise_window(frame: int, frames: list[int]) -> list[int]:

@@ -23,6 +23,10 @@ SNAPSHOT = "scene"
 SHOT_VARS = ("SHOT_SUBSTEPS",)
 # The line of a node's comment that names its last job.
 COMMENT = "Tractor job"
+BUILD_FAILED = (
+    "The job could not be built, so nothing was sent to Tractor. The details "
+    "below say what went wrong."
+)
 
 log = logging.getLogger(__name__)
 
@@ -32,35 +36,18 @@ def send(node: hou.Node) -> None:
     try:
         prepared = _prepare(node)
     except SendRefused as refusal:
-        _refuse(str(refusal))
+        refuse(str(refusal))
         return
     except Exception:
         log.exception("Building the job for %s failed", node.path())
-        _refuse(
-            "The job could not be built, so nothing was sent to Tractor. The "
-            "details below say what went wrong.",
-            traceback.format_exc(),
-        )
+        refuse(BUILD_FAILED, traceback.format_exc())
         return
     if prepared is None:
         return
     built, title, sent = prepared
 
-    try:
-        job_id = built.spool(block=True)
-    except Exception:
-        # A lost reply looks the same as a refusal, and the job may already be
-        # queued and reading its snapshot, so it stays.
-        log.exception("Tractor did not confirm the job for %s", node.path())
-        job_id = None
-        hou.ui.displayMessage(
-            "Tractor did not confirm the job, but it may still have been queued. "
-            f'Look for "{title}" in Tractor before sending again.',
-            title="Tractor did not confirm the job",
-            severity=hou.severityType.Warning,
-            details=traceback.format_exc(),
-        )
-    else:
+    job_id = spool(built, title)
+    if job_id is not None:
         hou.ui.displayMessage(
             f"Job {job_id} caches:\n"
             + "\n".join(cache.path() for cache in sent)
@@ -68,42 +55,58 @@ def send(node: hou.Node) -> None:
             title="Job sent to Tractor",
         )
     for cache in sent:
-        _record(cache, job_id)
+        note(cache, COMMENT, _job_line(job_id))
+
+
+def spool(built: author.Job, title: str) -> int | None:
+    """The job's id, or None after warning that Tractor did not confirm it."""
+    try:
+        return built.spool(block=True)
+    except Exception:
+        # A lost reply looks the same as a refusal, and the job may already be
+        # queued and reading its snapshot, so its folder stays.
+        log.exception("Tractor did not confirm the job %s", title)
+        hou.ui.displayMessage(
+            "Tractor did not confirm the job, but it may still have been queued. "
+            f'Look for "{title}" in Tractor before sending again.',
+            title="Tractor did not confirm the job",
+            severity=hou.severityType.Warning,
+            details=traceback.format_exc(),
+        )
+        return None
+
+
+def _job_line(job_id: int | None) -> str:
+    if job_id is None:
+        return f"{COMMENT} not confirmed by Tractor"
+    return f"{COMMENT} {job_id}"
 
 
 def _prepare(node: hou.Node) -> tuple[author.Job, str, list[hou.Node]] | None:
     """The job, its title and the caches it writes, or None when cancelled."""
-    if hou.hipFile.isNewFile():
-        raise SendRefused("Save the hip file first. Its caches are written beside it.")
-    # A cache saved into an asset keeps its button there.
-    if node.isInsideLockedHDA():
-        raise SendRefused(
-            f"{node.path()} is inside the locked asset {_locked_asset(node).path()}, "
-            "so Send can't turn on its Load from Disk. Choose Allow Editing of "
-            "Contents on the asset, then Send again."
-        )
+    check(node)
     choice = cache_dialog.prompt(
         runtime.get_main_qt_window(),
         node,
         caches.upstream(node),
-        _title(node),
+        title(node),
         _frames(node),
     )
     if choice is None:
         return None
     sent = [*choice.first, node]
-    folder = _claim(node)
+    folder = claim(node)
     try:
         hip = Path(hou.hipFile.path())
         snapshot = folder / f"{SNAPSHOT}{hip.suffix}"
-        env = _environment()
+        env = environment()
         specs = [
             commands.Cache(snapshot, hip, cache.path(), caches.chunks(cache), env)
             for cache in sent
         ]
         built = job.cache_job(choice.title, choice.priority, choice.service, specs)
         _load_from_disk(choice.first, node)
-        _write_snapshot(snapshot)
+        write_snapshot(snapshot)
     except BaseException:
         # Nothing has read the folder yet.
         shutil.rmtree(folder)
@@ -111,13 +114,26 @@ def _prepare(node: hou.Node) -> tuple[author.Job, str, list[hou.Node]] | None:
     return built, choice.title, sent
 
 
-def _refuse(message: str, details: str | None = None) -> None:
+def refuse(message: str, details: str | None = None) -> None:
     hou.ui.displayMessage(
         message,
         title="Nothing was sent to Tractor",
         severity=hou.severityType.Error,
         details=details,
     )
+
+
+def check(node: hou.Node) -> None:
+    """Refuse a node no Send can write."""
+    if hou.hipFile.isNewFile():
+        raise SendRefused("Save the hip file first. Its caches are written beside it.")
+    # A cache saved into an asset keeps its buttons there.
+    if node.isInsideLockedHDA():
+        raise SendRefused(
+            f"{node.path()} is inside the locked asset {_locked_asset(node).path()}, "
+            "so Send can't change its parms. Choose Allow Editing of Contents on "
+            "the asset, then Send again."
+        )
 
 
 def _locked_asset(node: hou.Node) -> hou.Node:
@@ -127,10 +143,10 @@ def _locked_asset(node: hou.Node) -> hou.Node:
     return asset
 
 
-def _title(node: hou.Node) -> str:
+def title(node: hou.Node, what: str = "") -> str:
     # The last folders of a shot's fx hip are <shot>/fx.
     hip = Path(hou.text.expandString("$HIP"))
-    return f"{hip.parent.name} {hip.name}: {node.name()}"
+    return f"{hip.parent.name} {hip.name}: {node.name()}{what}"
 
 
 def _frames(node: hou.Node) -> str:
@@ -139,7 +155,7 @@ def _frames(node: hou.Node) -> str:
     return f"{start:g}" if start == end else f"{start:g} to {end:g}"
 
 
-def _claim(node: hou.Node) -> Path:
+def claim(node: hou.Node) -> Path:
     """Creates a folder on disk: the next version of the node's Send folder."""
     geo = Path(hou.text.expandString("$HIP")) / SIM_DIRNAME
     # Only Open Shot links a hip's geo folder to the cache mount.
@@ -153,7 +169,7 @@ def _claim(node: hou.Node) -> Path:
     return folder
 
 
-def _environment() -> dict[str, str]:
+def environment() -> dict[str, str]:
     """The session's values of what a blade needs to load the hip as it did."""
     names = {name for name, value in launch.environment().items() if value is not None}
     names.update(ENV_VARS, SHOT_VARS)
@@ -172,7 +188,7 @@ def _load_from_disk(first: list[hou.Node], node: hou.Node) -> None:
     node.hdaModule().enableLoadFromDisk(node)
 
 
-def _write_snapshot(path: Path) -> None:
+def write_snapshot(path: Path) -> None:
     """Writes the session to `path`, unsaved edits included.
 
     Unlike saving, `mwrite -n` leaves the session's file name and `$HIP` alone.
@@ -182,14 +198,9 @@ def _write_snapshot(path: Path) -> None:
         raise SendRefused(f"Could not write the scene to {path}.\n\n{error}")
 
 
-def _record(node: hou.Node, job_id: int | None) -> None:
-    """Name the job in the node's comment, keeping the artist's own lines."""
-    if job_id is None:
-        line = f"{COMMENT} not confirmed by Tractor"
-    else:
-        line = f"{COMMENT} {job_id}"
-    kept = [
-        text for text in node.comment().splitlines() if not text.startswith(COMMENT)
-    ]
+def note(node: hou.Node, prefix: str, line: str) -> None:
+    """Replace the line of the node's comment that starts with `prefix`,
+    keeping the artist's own lines."""
+    kept = [text for text in node.comment().splitlines() if not text.startswith(prefix)]
     node.setComment("\n".join([*kept, line]))
     node.setGenericFlag(hou.nodeFlag.DisplayComment, True)

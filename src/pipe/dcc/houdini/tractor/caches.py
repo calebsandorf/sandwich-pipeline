@@ -3,17 +3,41 @@ the caches upstream of one, and the frames each of its tasks writes."""
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 import hou
 
 from pipe.dcc.houdini.tractor.cache import ROP, STEP_TOLERANCE
 from pipe.dcc.houdini.util.nodetypes import FILE_CACHE
 
 BUTTON = "skd_cache_send"
-BUTTON_LABEL = "Save to Disk on Tractor"
-BUTTON_CALLBACK = (
-    "from pipe.dcc.houdini.tractor import cache_send; cache_send.send(kwargs['node'])"
+WEDGE_BUTTON = "skd_wedge_send"
+REVIEW_BUTTON = "skd_wedge_review"
+# Name, label, callback and help of each button, in the order they sit in one row.
+BUTTONS = (
+    (
+        BUTTON,
+        "Save to Disk on Tractor",
+        "from pipe.dcc.houdini.tractor import cache_send; "
+        "cache_send.send(kwargs['node'])",
+        "Write this cache on the farm, from a copy of the scene as it is now.",
+    ),
+    (
+        WEDGE_BUTTON,
+        "Wedge on Tractor",
+        "from pipe.dcc.houdini.tractor import wedge_send; "
+        "wedge_send.send(kwargs['node'])",
+        "Sim this cache on the farm once for each wedged value, and flipbook each.",
+    ),
+    (
+        REVIEW_BUTTON,
+        "Review Wedges",
+        "from pipe.dcc.houdini.tractor import wedge_review; "
+        "wedge_review.review(kwargs['node'])",
+        "Play the finished wedges of this cache, and apply one's values.",
+    ),
 )
-# Save to Disk's row ends with Cancel Cook, so the button starts the row below.
+# Save to Disk's row ends with Cancel Cook, so the buttons start the row below.
 BUTTON_AFTER = "dirtyall"
 
 LOAD_FROM_DISK = "loadfromdisk"
@@ -26,21 +50,29 @@ DISPLAYED = (hou.ObjNode, hou.SopNode, hou.DopNode, hou.LopNode)
 CHUNK = 10
 
 
-def add_button(node: hou.Node) -> None:
+def add_buttons(node: hou.Node) -> None:
     """Run by the site's event scripts when a File Cache is created or loaded."""
-    # A copied node brings its button along, and adding it twice raises.
-    if node.parm(BUTTON) is not None or node.isInsideLockedHDA():
+    if node.isInsideLockedHDA():
         return
     group = node.parmTemplateGroup()
-    button = hou.ButtonParmTemplate(
-        BUTTON,
-        BUTTON_LABEL,
-        script_callback=BUTTON_CALLBACK,
-        script_callback_language=hou.scriptLanguage.Python,
-        help="Write this cache on the farm, from a copy of the scene as it is now.",
-    )
-    group.insertAfter(BUTTON_AFTER, button)
-    node.setParmTemplateGroup(group)
+    after = BUTTON_AFTER
+    changed = False
+    for index, (name, label, callback, help_text) in enumerate(BUTTONS):
+        # A copied node brings its buttons along, and adding one twice raises.
+        if group.find(name) is None:
+            button = hou.ButtonParmTemplate(
+                name,
+                label,
+                script_callback=callback,
+                script_callback_language=hou.scriptLanguage.Python,
+                help=help_text,
+                join_with_next=index < len(BUTTONS) - 1,
+            )
+            group.insertAfter(after, button)
+            changed = True
+        after = name
+    if changed:
+        node.setParmTemplateGroup(group)
 
 
 def sendable(node: hou.Node) -> bool:
@@ -51,6 +83,16 @@ def sendable(node: hou.Node) -> bool:
 
 def upstream(node: hou.Node) -> list[hou.Node]:
     """The sendable File Caches `node` reads from, each after the caches it reads."""
+    return [n for n in reached(node) if n != node and sendable(n)]
+
+
+def reached(
+    node: hou.Node, stop: Callable[[hou.Node], bool] = lambda _: False
+) -> list[hou.Node]:
+    """Every node `node` cooks from, each after the nodes it cooks from.
+
+    A node for which `stop` is true is reached, but not walked past.
+    """
     found: list[hou.Node] = []
     seen = {(node.sessionId(), True)}
     stack = [(node, iter(_feeds(node, True, node)))]
@@ -59,12 +101,13 @@ def upstream(node: hou.Node) -> list[hou.Node]:
         nxt = next(feeds, None)
         if nxt is None:
             stack.pop()
-            if current != node and sendable(current) and current not in found:
+            if current not in found:
                 found.append(current)
             continue
         if (nxt[0].sessionId(), nxt[1]) not in seen:
             seen.add((nxt[0].sessionId(), nxt[1]))
-            stack.append((nxt[0], iter(_feeds(nxt[0], nxt[1], node))))
+            walked = [] if stop(nxt[0]) else _feeds(nxt[0], nxt[1], node)
+            stack.append((nxt[0], iter(walked)))
     return found
 
 

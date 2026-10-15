@@ -5,6 +5,8 @@ from __future__ import annotations
 from collections.abc import Callable
 from pathlib import Path
 
+import attrs
+
 from Qt.QtCore import (
     QElapsedTimer,
     QSize,
@@ -61,6 +63,15 @@ _PLAY_ICON = 26
 _UNCONFIRMED = (PanelStatus.PENDING, PanelStatus.FAILED)
 
 
+@attrs.frozen
+class ClipAction:
+    """A button that acts on the clip on screen, given its index in the clips."""
+
+    label: str
+    run: Callable[[int], None]
+    tooltip: str = ""
+
+
 def _frame_size(clip: PreviewClip) -> tuple[int, int] | None:
     """Pixel size of the clip's first frame, read from the PNG header alone,
     or None if the frame is unreadable."""
@@ -99,6 +110,7 @@ class ViewerWindow(QMainWindow):
     _cut_unavailable: str
     _cut_section: CutSection
     _confirm_remaining_button: QPushButton
+    _action: ClipAction | None
 
     def __init__(
         self,
@@ -107,6 +119,7 @@ class ViewerWindow(QMainWindow):
         *,
         cut: PreviewClip | None = None,
         cut_unavailable: str = "",
+        action: ClipAction | None = None,
     ) -> None:
         # The parent (the DCC main window) owns the viewer's lifetime; a
         # QMainWindow always carries Qt.Window, so it stays a real window
@@ -124,6 +137,7 @@ class ViewerWindow(QMainWindow):
         self._playing = False
         self._was_playing_before_scrub = False
         self._missing_frames_warned = set()
+        self._action = action
 
         # Playback clock: frames advance by wall-clock time, not tick count,
         # so a slow paint skips frames instead of slowing the clip down.
@@ -299,6 +313,8 @@ class ViewerWindow(QMainWindow):
         # Equal-stretch side sections keep the play cluster dead-center; the
         # left one balances the loop toggle on the right.
         left = QHBoxLayout()
+        if self._action is not None:
+            left.addWidget(self._action_button(self._action))
         left.addStretch(1)
         row.addLayout(left, stretch=1)
 
@@ -334,6 +350,14 @@ class ViewerWindow(QMainWindow):
 
         transport.addLayout(row)
         return transport
+
+    def _action_button(self, action: ClipAction) -> QPushButton:
+        button = QPushButton(action.label)
+        button.setToolTip(action.tooltip)
+        # As with the transport buttons, Space must keep playing.
+        button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        button.clicked.connect(lambda: action.run(self._current_index))
+        return button
 
     def _transport_button(
         self,
@@ -622,4 +646,4 @@ class ViewerWindow(QMainWindow):
             event.ignore()
 
 
-__all__ = ["ViewerWindow"]
+__all__ = ["ClipAction", "ViewerWindow"]
