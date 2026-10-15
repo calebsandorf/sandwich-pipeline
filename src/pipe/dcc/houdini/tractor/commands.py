@@ -23,6 +23,8 @@ LICENSE_TRAP = rf'trap "test \$? -eq 3 && hserver -S {LICENSE_SERVER} && exit 3"
 # This catches jobs that segfault then keep running instead of failing
 HUSK_SEGFAULT = "Fatal error: Segmentation fault"
 SEGFAULT_EXIT = 139
+# Run by hython on the blade: writes one File Cache from a Send's snapshot.
+CACHE_MODULE = "pipe.dcc.houdini.tractor.cache"
 # RenderMan's denoiser reads this many frames either side of each frame.
 DENOISE_RADIUS = 3
 
@@ -52,6 +54,14 @@ class Encode:
     frame_rate: float
     # Cleanup deletes the frames once the video is written.
     remove_frames: bool
+
+
+@dataclass(frozen=True)
+class Cache:
+    snapshot: Path
+    # The artist's hip, whose name the snapshot takes back once it is loaded.
+    hip: Path
+    node: str
 
 
 @dataclass(frozen=True)
@@ -101,6 +111,22 @@ def render(layer: Layer, frame: int) -> str:
             f'    f="$d/{frame:04}.exr"',
             '    [ -f "$f" ] || { echo "husk exited without writing $f" >&2; exit 1; }',
             "done",
+        ]
+    )
+
+
+def cache(spec: Cache, start: float, end: float) -> str:
+    """The task fails with hython's exit code, which is 1 when a frame is unreadable."""
+    return shlex.join(
+        [
+            "hython",
+            "-m",
+            CACHE_MODULE,
+            str(spec.snapshot),
+            str(spec.hip),
+            spec.node,
+            f"{start:g}",
+            f"{end:g}",
         ]
     )
 
