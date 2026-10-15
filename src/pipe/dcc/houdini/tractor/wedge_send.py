@@ -210,7 +210,8 @@ def _parm(path: str) -> hou.Parm:
 
 
 def _check_reach(node: hou.Node, parm: hou.Parm) -> None:
-    """Refuse a parm whose wedges would all come back the same."""
+    """Refuse a parm that reaches the cache only through a cache loading from
+    disk, since every wedge would then come back the same."""
 
     def loads(other: hou.Node) -> bool:
         return (
@@ -222,16 +223,10 @@ def _check_reach(node: hou.Node, parm: hou.Parm) -> None:
     target = parm.node()
     if target in caches.reached(node, stop=loads):
         return
-    name = wedges.label(parm.path())
-    behind = [
-        c for c in caches.reached(node) if loads(c) and target in caches.reached(c)
-    ]
-    if behind:
-        raise SendRefused(
-            f"{name} reaches {node.name()} only through {behind[0].path()}, which "
-            "loads from disk, so every wedge would come back the same. Turn off "
-            "its Load from Disk, then Send again."
-        )
-    raise SendRefused(
-        f"{node.name()} doesn't read {name}, so every wedge would come back the same."
-    )
+    for cache in caches.reached(node):
+        if loads(cache) and target in caches.reached(cache):
+            raise SendRefused(
+                f"{wedges.label(parm.path())} reaches {node.name()} only through "
+                f"{cache.path()}, which loads from disk, so every wedge would come "
+                "back the same. Turn off its Load from Disk, then Send again."
+            )

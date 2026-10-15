@@ -29,6 +29,25 @@ CACHE_MODULE = "pipe.dcc.houdini.tractor.cache"
 WEDGE_MODULE = "pipe.dcc.houdini.tractor.wedge"
 WEDGE_SIM = "sim"
 WEDGE_FLIPBOOK = "flipbook"
+# The OpenGL ROP draws only through an X server that lets it in, and without a
+# DISPLAY it uses :0. On a blade :0 is the login screen's, which refuses the
+# job, and Qt then aborts hython (job 17227). So the flipbook starts its own
+# server. Xvnc reads every cookie in its -auth file, whatever display it names,
+# so the cookie is written before the display number is known.
+PRIVATE_DISPLAY = [
+    "x=$(mktemp -d)",
+    "cookie=$(mcookie)",
+    'xauth -q -f "$x/auth" add :0 . "$cookie"',
+    # Viewers could connect only through a socket in the private folder.
+    'Xvnc -displayfd 3 -auth "$x/auth" -rfbport -1 -rfbunixpath "$x/vnc"'
+    ' -nolisten tcp 3>"$x/display" &',
+    "xvnc=$!",
+    'trap \'kill "$xvnc"; rm -rf "$x"\' EXIT',
+    # Fails the task if Xvnc exits before it is ready.
+    'until [ -s "$x/display" ]; do kill -0 "$xvnc"; sleep 0.2; done',
+    'export DISPLAY=":$(cat "$x/display")" XAUTHORITY="$x/auth"',
+    'xauth -q add "$DISPLAY" . "$cookie"',
+]
 # RenderMan's denoiser reads this many frames either side of each frame.
 DENOISE_RADIUS = 3
 
@@ -153,7 +172,8 @@ def wedge(spec: Wedges, name: str, step: str) -> str:
     """One step of one wedge, `WEDGE_SIM` or `WEDGE_FLIPBOOK`. Exported like
     `cache`, and failing with hython's exit code."""
     hython = ["hython", "-m", WEDGE_MODULE, str(spec.record), name, step]
-    return "\n".join([*_exports(spec.env), shlex.join(hython)])
+    display = PRIVATE_DISPLAY if step == WEDGE_FLIPBOOK else []
+    return "\n".join([*_exports(spec.env), *display, shlex.join(hython)])
 
 
 def _exports(env: dict[str, str]) -> list[str]:

@@ -106,10 +106,11 @@ def parse(parm: hou.Parm, text: str) -> list[Value]:
 
 def _value(parm: hou.Parm, token: str) -> Value:
     kind = parm.parmTemplate().type()
-    menu = parm.menuItems() if kind in _MENUS else ()
+    menu = _menu(parm)
     try:
         if token in menu:
-            return token if kind == hou.parmTemplateType.Menu else menu.index(token)
+            # A string parm holds the token, and the others the item's index.
+            return token if kind == hou.parmTemplateType.String else menu.index(token)
         if kind == hou.parmTemplateType.Float:
             return float(token)
         if kind in (hou.parmTemplateType.Int, hou.parmTemplateType.Toggle):
@@ -124,7 +125,20 @@ def _value(parm: hou.Parm, token: str) -> Value:
     raise ValueError(f"{token} is not a value of {label(parm.path())}: use {expected}.")
 
 
-_MENUS = (hou.parmTemplateType.Int, hou.parmTemplateType.Menu)
+def _menu(parm: hou.Parm) -> tuple[str, ...]:
+    """The tokens of the parm's menu, if its type can have one."""
+    template = parm.parmTemplate()
+    if template.type() not in _MENUS:
+        return ()
+    # The base ParmTemplate doesn't declare what these subtypes have.
+    return tuple(template.menuItems())  # ty: ignore[unresolved-attribute]
+
+
+_MENUS = (
+    hou.parmTemplateType.Int,
+    hou.parmTemplateType.Menu,
+    hou.parmTemplateType.String,
+)
 _EXPECTED = {
     hou.parmTemplateType.Float: "numbers",
     hou.parmTemplateType.Int: "whole numbers",
