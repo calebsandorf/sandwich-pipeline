@@ -1,12 +1,19 @@
 """The Tractor job for one Send, built from plain values so it reads without Houdini.
 
-Each layer renders every frame, then optionally denoises and encodes them:
+A render Send's job has one task per layer. Each layer renders every frame,
+then optionally denoises and encodes them:
 
     <layer>
     ├── Render <layer>      one task per frame
     ├── Denoise <layer>     one task per frame, after the frames it reads
     ├── Encode <layer>      after every frame is final
     └── Cleanup <layer>     after everything else: checks, deletes tmp/, marks complete
+
+A cache Send's job writes each cache in turn, one task per simulation and
+one per chunk of frames otherwise:
+
+    Cache <node>            for each Cache first cache, upstream first
+    Cache <node>            the cache that was sent
 
 Every task is one command from `commands.py`. Titles carry the layer, so they
 are unique within the job, which Instances rely on.
@@ -17,10 +24,12 @@ from __future__ import annotations
 import tractor.api.author as author
 
 from pipe.dcc.houdini.tractor import commands
-from pipe.dcc.houdini.tractor.commands import Layer
+from pipe.dcc.houdini.tractor.commands import Cache, Layer
 
-# Tractor runs every command on blades that offer this service.
+# Tractor runs a command only on blades that offer its service. Every blade
+# offers EL9, and each offers the name of its profile.
 SERVICE = "EL9"
+MONSTERS = "Monster_EL9"
 
 RENDER_RETRIES = [
     3,  # Can't get license
@@ -80,9 +89,36 @@ def _denoise_task(layer: Layer, product: str) -> author.Task:
     return task
 
 
-def _task(title: str, script: str, retries: list[int] | None = None) -> author.Task:
+def cache_job(
+    title: str, priority: int, service: str, caches: list[Cache]
+) -> author.Job:
+    """No task is retried: a sim's retry starts again from its first frame,
+    which can cost hours, so the artist decides whether to send it again."""
+    job = author.Job(title=title, priority=priority, serialsubtasks=True)
+    for cache in caches:
+        name = f"Cache {cache.node}"
+        if len(cache.chunks) == 1:
+            start, end = cache.chunks[0]
+            job.addChild(
+                _task(name, commands.cache(cache, start, end), service=service)
+            )
+            continue
+        task = author.Task(title=name)
+        for start, end in cache.chunks:
+            script = commands.cache(cache, start, end)
+            task.addChild(_task(f"{name} {start:g}-{end:g}", script, service=service))
+        job.addChild(task)
+    return job
+
+
+def _task(
+    title: str,
+    script: str,
+    retries: list[int] | None = None,
+    service: str = SERVICE,
+) -> author.Task:
     task = author.Task(title=title)
-    command = author.Command(argv=["/bin/bash", "-exc", script], service=SERVICE)
+    command = author.Command(argv=["/bin/bash", "-exc", script], service=service)
     if retries:
         command.retryrc = retries
     task.addCommand(command)

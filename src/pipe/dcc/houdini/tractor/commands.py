@@ -62,6 +62,10 @@ class Cache:
     # The artist's hip, whose name the snapshot takes back once it is loaded.
     hip: Path
     node: str
+    # The start and end frame of each task that writes the node.
+    chunks: list[tuple[float, float]]
+    # The session's variables, which hython needs to load the hip as it did.
+    env: dict[str, str]
 
 
 @dataclass(frozen=True)
@@ -116,19 +120,25 @@ def render(layer: Layer, frame: int) -> str:
 
 
 def cache(spec: Cache, start: float, end: float) -> str:
-    """The task fails with hython's exit code, which is 1 when a frame is unreadable."""
-    return shlex.join(
-        [
-            "hython",
-            "-m",
-            CACHE_MODULE,
-            str(spec.snapshot),
-            str(spec.hip),
-            spec.node,
-            f"{start:g}",
-            f"{end:g}",
-        ]
-    )
+    """The task fails with hython's exit code, which is 1 when a frame is unreadable.
+
+    The script exports the variables itself: Tractor's envkey cuts a value
+    at its first space, and OCIO_ACTIVE_DISPLAYS holds spaces.
+    """
+    hython = [
+        "hython",
+        "-m",
+        CACHE_MODULE,
+        str(spec.snapshot),
+        str(spec.hip),
+        spec.node,
+        f"{start:g}",
+        f"{end:g}",
+    ]
+    exports = [
+        f"export {name}={shlex.quote(value)}" for name, value in spec.env.items()
+    ]
+    return "\n".join([*exports, shlex.join(hython)])
 
 
 def denoise_window(frame: int, frames: list[int]) -> list[int]:
