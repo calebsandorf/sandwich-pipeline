@@ -24,6 +24,8 @@ Check = Callable[[list[Row]], list[Wedge]]
 # One wedge is just a farm sim.
 MINIMUM = 2
 _WIDTH = 520
+# Houdini's own icon for removing a multiparm instance.
+_REMOVE_ICON = "BUTTONS_multi_remove"
 
 
 @dataclass(frozen=True)
@@ -140,6 +142,8 @@ class _WedgeDialog(QtWidgets.QDialog, DialogButtons):
         self._send = send
         self._wedges: list[Wedge] = []
         self._fields: list[tuple[_ParmField, QtWidgets.QLineEdit]] = []
+        # Every widget of each row, in the order of `_fields`.
+        self._rows: list[list[QtWidgets.QWidget]] = []
 
         self._title = QtWidgets.QLineEdit()
         self._title.setPlaceholderText(title)
@@ -199,11 +203,31 @@ class _WedgeDialog(QtWidgets.QDialog, DialogButtons):
         value_field.setPlaceholderText("Values, like 0.5 1 2")
         for field in (parm, value_field):
             field.textChanged.connect(self._update_count)
+        remove = QtWidgets.QToolButton()
+        remove.setIcon(hou.qt.Icon(_REMOVE_ICON))
+        remove.setAutoRaise(True)
+        remove.setToolTip("Remove this parm")
+        widgets = [parm, chooser, value_field, remove]
+        remove.clicked.connect(lambda: self._remove_row(widgets))
         row = self._grid.rowCount()
-        self._grid.addWidget(parm, row, 0)
-        self._grid.addWidget(chooser, row, 1)
-        self._grid.addWidget(value_field, row, 2)
+        for column, widget in enumerate(widgets):
+            self._grid.addWidget(widget, row, column)
         self._fields.append((parm, value_field))
+        self._rows.append(widgets)
+
+    def _remove_row(self, widgets: list[QtWidgets.QWidget]) -> None:
+        index = self._rows.index(widgets)
+        if len(self._rows) == 1:
+            # The last row is cleared, so there is always one to fill.
+            for field in self._fields[0]:
+                field.clear()
+            return
+        del self._rows[index]
+        del self._fields[index]
+        for widget in widgets:
+            self._grid.removeWidget(widget)
+            widget.deleteLater()
+        self._update_count()
 
     def rows(self) -> list[Row]:
         return [

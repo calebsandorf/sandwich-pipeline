@@ -1,9 +1,10 @@
 """Wedge review: the Review Wedges button of a File Cache. Every finished wedge
-of the node's runs plays in the playblast viewer, newest run first, and Apply
-Values sets the wedge on screen in the hip."""
+of the node's runs plays in the playblast viewer, newest run first. Apply
+Values sets the wedge on screen in the hip, and Delete removes it from disk."""
 
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 
 import hou
@@ -27,7 +28,8 @@ def review(node: hou.Node) -> None:
         )
         return
     clips: list[PreviewClip] = []
-    shown: list[tuple[wedges.Run, wedges.Wedge]] = []
+    # The run and wedge of each clip, by its frames folder.
+    shown: dict[Path, tuple[wedges.Run, wedges.Wedge]] = {}
     for run in runs:
         for wedge in run.wedges:
             frames = run.folder / wedge.name / wedges.FLIPBOOK
@@ -45,7 +47,7 @@ def review(node: hou.Node) -> None:
                     fps=round(run.fps),
                 )
             )
-            shown.append((run, wedge))
+            shown[frames] = (run, wedge)
     if not clips:
         hou.ui.displayMessage(
             f"No wedge of {node.path()} has finished yet. Its last run is "
@@ -53,12 +55,19 @@ def review(node: hou.Node) -> None:
             title=TITLE,
         )
         return
-    action = ClipAction(
-        "Apply Values",
-        lambda index: _apply(*shown[index]),
-        "Set this wedge's values in the hip.",
-    )
-    open_viewer(clips, runtime.get_main_qt_window(), action=action)
+    actions = [
+        ClipAction(
+            "Apply Values",
+            lambda clip: _apply(*shown[clip.frames_dir]),
+            "Set this wedge's values in the hip.",
+        ),
+        ClipAction(
+            "Delete",
+            lambda clip: _delete(*shown[clip.frames_dir]),
+            "Delete this wedge's cache and flipbook from disk.",
+        ),
+    ]
+    open_viewer(clips, runtime.get_main_qt_window(), actions=actions)
 
 
 def _runs(node: hou.Node) -> list[wedges.Run]:
@@ -70,7 +79,7 @@ def _runs(node: hou.Node) -> list[wedges.Run]:
     return [run for run in runs if run.node == node.path()]
 
 
-def _apply(run: wedges.Run, wedge: wedges.Wedge) -> None:
+def _apply(run: wedges.Run, wedge: wedges.Wedge) -> bool:
     name = f"{run.folder.name} {wedge.name}"
     with hou.undos.group(f"Apply wedge {name}"):
         missing = wedges.set_values(wedge)
@@ -81,5 +90,27 @@ def _apply(run: wedges.Run, wedge: wedges.Wedge) -> None:
             title=TITLE,
             severity=hou.severityType.Warning,
         )
-        return
+        return False
     hou.ui.setStatusMessage(f"Applied {name}: {', '.join(wedges.describe(wedge))}")
+    return False
+
+
+def _delete(run: wedges.Run, wedge: wedges.Wedge) -> bool:
+    name = f"{run.folder.name} {wedge.name}"
+    pressed = hou.ui.displayMessage(
+        f"Delete {name}? Its cache and flipbook can't be recovered.",
+        buttons=("Delete", "Cancel"),
+        default_choice=1,
+        close_choice=1,
+        title=TITLE,
+        severity=hou.severityType.Warning,
+    )
+    if pressed != 0:
+        return False
+    shutil.rmtree(run.folder / wedge.name)
+    # Send makes every wedge's folder, so none left means none is still to
+    # run, and the run's snapshot and record go with the last one.
+    if not any((run.folder / w.name).exists() for w in run.wedges):
+        shutil.rmtree(run.folder)
+    hou.ui.setStatusMessage(f"Deleted {name}")
+    return True

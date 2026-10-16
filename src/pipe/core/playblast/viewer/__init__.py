@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 from Qt.QtWidgets import QWidget
 
 from pipe.core.playblast.clip import PreviewClip
@@ -14,11 +16,11 @@ def open_viewer(
     *,
     cut: PreviewClip | None = None,
     cut_unavailable: str = "",
-    action: ClipAction | None = None,
+    actions: Sequence[ClipAction] = (),
 ) -> None:
     """Open a viewer window on `clips`"""
     ViewerWindow(
-        clips, parent, cut=cut, cut_unavailable=cut_unavailable, action=action
+        clips, parent, cut=cut, cut_unavailable=cut_unavailable, actions=actions
     ).show()
 
 

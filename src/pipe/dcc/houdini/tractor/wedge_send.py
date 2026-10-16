@@ -125,6 +125,9 @@ def _build(
         )
         spec = commands.Wedges(wedges.write_record(run), environment())
         names = [wedge.name for wedge in run.wedges]
+        # Made now, so Review's Delete tells a wedge yet to run from a deleted one.
+        for name in names:
+            (folder / name).mkdir()
         built = job.wedge_job(
             choice.title, choice.priority, choice.service, spec, names
         )
