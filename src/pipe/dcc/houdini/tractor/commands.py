@@ -25,10 +25,14 @@ HUSK_SEGFAULT = "Fatal error: Segmentation fault"
 SEGFAULT_EXIT = 139
 # Run by hython on the blade: writes one File Cache from a Send's snapshot.
 CACHE_MODULE = "pipe.dcc.houdini.tractor.cache"
-# Run by hython on the blade: sims or flipbooks one wedge of a Wedge Send.
+# Run by hython on the blade: sims, flipbooks or finishes one wedge of a Wedge Send.
 WEDGE_MODULE = "pipe.dcc.houdini.tractor.wedge"
 WEDGE_SIM = "sim"
 WEDGE_FLIPBOOK = "flipbook"
+WEDGE_FINISH = "finish"
+# A flipbook's exit code when it couldn't draw, as when other tasks on the blade
+# have filled the GPU's memory. Tractor retries it.
+WEDGE_DRAW_FAILED = 75
 PRIVATE_DISPLAY = [
     "x=$(mktemp -d)",
     "cookie=$(mcookie)",
@@ -91,6 +95,8 @@ class Wedges:
     # The run's wedge.json, which holds everything else a task needs.
     record: Path
     env: dict[str, str]
+    # The start and end frame of each flipbook task.
+    chunks: list[tuple[int, int]]
 
 
 @dataclass(frozen=True)
@@ -163,10 +169,11 @@ def cache(spec: Cache, start: float, end: float) -> str:
     return "\n".join([*_exports(spec.env), shlex.join(hython)])
 
 
-def wedge(spec: Wedges, name: str, step: str) -> str:
-    """One step of one wedge, `WEDGE_SIM` or `WEDGE_FLIPBOOK`. Exported like
-    `cache`, and failing with hython's exit code."""
+def wedge(spec: Wedges, name: str, step: str, frames: tuple[int, ...] = ()) -> str:
+    """One step of one wedge, with a flipbook's start and end frame. Exported
+    like `cache`, and failing with hython's exit code."""
     hython = ["hython", "-m", WEDGE_MODULE, str(spec.record), name, step]
+    hython += [str(frame) for frame in frames]
     display = PRIVATE_DISPLAY if step == WEDGE_FLIPBOOK else []
     return "\n".join([*_exports(spec.env), *display, shlex.join(hython)])
 

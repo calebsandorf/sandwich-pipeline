@@ -125,7 +125,9 @@ def _build(
             camera=choice.camera,
             wedges=choice.wedges,
         )
-        spec = commands.Wedges(wedges.write_record(run), environment())
+        spec = commands.Wedges(
+            wedges.write_record(run), environment(), wedges.chunks(run)
+        )
         names = [wedge.name for wedge in run.wedges]
         # Made now, so Review's Delete tells a wedge yet to run from a deleted one.
         for name in names:

@@ -28,6 +28,9 @@ FRAMES = "flipbook"
 SHOT_CAMERA = "/cameras/shotCam"
 # File Cache 2.0 builds its path from a base folder, unless it is given a file.
 CONSTRUCTED = 0
+# The most frames a flipbook task draws. Each task loads the scene and its
+# textures again, which takes about a minute on a dressed set.
+FLIPBOOK_CHUNK = 30
 
 Value = float | int | str
 
@@ -61,6 +64,18 @@ class Run:
     @property
     def folder(self) -> Path:
         return self.snapshot.parent
+
+
+def chunks(run: Run) -> list[tuple[int, int]]:
+    """The start and end frame of each flipbook task, evenly sized so the last
+    task isn't a scene load for a few frames."""
+    count = run.end - run.start + 1
+    tasks = -(-count // FLIPBOOK_CHUNK)
+    size = -(-count // tasks)
+    return [
+        (start, min(start + size - 1, run.end))
+        for start in range(run.start, run.end + 1, size)
+    ]
 
 
 def write_record(run: Run) -> Path:

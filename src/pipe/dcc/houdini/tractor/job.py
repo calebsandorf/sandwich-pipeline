@@ -15,12 +15,14 @@ one per chunk of frames otherwise:
     Cache <node>            for each Cache first cache, upstream first
     Cache <node>            the cache that was sent
 
-A wedge Send's job flipbooks each wedge once its sim is written:
+A wedge Send's job sims each wedge, flipbooks it a chunk of frames per task,
+then finishes the flipbook:
 
-    Flipbook w01
-    └── Sim w01
-    Flipbook w02
-    └── Sim w02
+    Flipbook w01            after both, in order
+    ├── Sim w01
+    └── Draw w01
+        ├── Draw w01 1001-1030
+        └── Draw w01 1031-1060
 
 Every task is one command from `commands.py`. Titles carry the layer, so they
 are unique within the job, which Instances rely on.
@@ -121,13 +123,22 @@ def cache_job(
 def wedge_job(
     title: str, priority: int, service: str, spec: Wedges, names: list[str]
 ) -> author.Job:
-    """No task is retried, as in `cache_job`."""
+    """A sim is never retried, as in `cache_job`. A flipbook is, when it
+    couldn't draw."""
     job = author.Job(title=title, priority=priority)
     for name in names:
+        finish = commands.wedge(spec, name, commands.WEDGE_FINISH)
+        task = _task(f"Flipbook {name}", finish, service=service)
+        # The flipbook reads the sim's cache.
+        task.serialsubtasks = True
         sim = commands.wedge(spec, name, commands.WEDGE_SIM)
-        draw = commands.wedge(spec, name, commands.WEDGE_FLIPBOOK)
-        task = _task(f"Flipbook {name}", draw, service=service)
         task.addChild(_task(f"Sim {name}", sim, service=service))
+        draw = author.Task(title=f"Draw {name}")
+        for start, end in spec.chunks:
+            script = commands.wedge(spec, name, commands.WEDGE_FLIPBOOK, (start, end))
+            title = f"Draw {name} {start}-{end}"
+            draw.addChild(_task(title, script, [commands.WEDGE_DRAW_FAILED], service))
+        task.addChild(draw)
         job.addChild(task)
     return job
 
