@@ -22,7 +22,7 @@ from pipe.dcc.houdini.tractor import cache, wedges
 from pipe.dcc.houdini.tractor.caches import LOAD_FROM_DISK
 from pipe.dcc.houdini.tractor.commands import WEDGE_FLIPBOOK, WEDGE_SIM
 
-# The OpenGL ROP's Source menu.
+# The Flipbook ROP's Source menu.
 OBJ_SOURCE = 0
 LOP_SOURCE = 1
 RAW = "raw"
@@ -67,7 +67,7 @@ def flipbook(run: wedges.Run, wedge: wedges.Wedge, folder: Path) -> int:
     scratch = folder / f"{wedges.FLIPBOOK}.tmp"
     shutil.rmtree(scratch, ignore_errors=True)
     scratch.mkdir(parents=True)
-    rop = _opengl(run.camera)
+    rop = _flipbook_rop(run.camera)
     if rop is None:
         return 1
     rop.setParms({"picture": str(scratch / f"{RAW}.$F4.png")})
@@ -95,10 +95,12 @@ def flipbook(run: wedges.Run, wedge: wedges.Wedge, folder: Path) -> int:
     return 0
 
 
-def _opengl(camera: wedges.Camera) -> hou.RopNode | None:
-    """An OpenGL ROP that draws the scene as the run chose, or None after
+def _flipbook_rop(camera: wedges.Camera) -> hou.RopNode | None:
+    """A Flipbook ROP that draws the scene as the run chose, or None after
     saying why it can't."""
-    rop = hou.node("/out").createNode("opengl")  # ty: ignore[unresolved-attribute]
+    # The viewport's renderer. The OpenGL ROP reloads every texture each frame,
+    # which made a textured set minutes per frame.
+    rop = hou.node("/out").createNode("flipbook")  # ty: ignore[unresolved-attribute]
     if camera.lop is None:
         if hou.node(camera.path) is None:
             print(f"The snapshot has no camera {camera.path}.", file=sys.stderr)

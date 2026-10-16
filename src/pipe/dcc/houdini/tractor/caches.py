@@ -117,6 +117,8 @@ def _feeds(node: hou.Node, whole: bool, sent: hou.Node) -> list[tuple[hou.Node, 
     if not whole:
         return [(n, not _within(sent, n)) for n in inputs]
     found = inputs + list(node.references(include_children=False))
+    # An asset cooks its output node, which needn't carry the display flag.
+    found += node.subnetOutputs()
     display = node.displayNode() if isinstance(node, DISPLAYED) else None
     if display is not None:
         found.append(display)

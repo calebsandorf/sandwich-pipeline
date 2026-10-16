@@ -54,6 +54,7 @@ def send(node: hou.Node) -> None:
     try:
         check(node)
         cameras = _cameras(node)
+        _check_drawn(node, cameras[0])
     except SendRefused as refusal:
         refuse(str(refusal))
         return
@@ -77,6 +78,7 @@ def _submit(path: str, choice: wedge_dialog.WedgeChoice) -> None:
     try:
         node = _node(path)
         check(node)
+        _check_drawn(node, choice.camera)
         built, run = _build(node, choice)
     except SendRefused as refusal:
         refuse(str(refusal))
@@ -161,6 +163,29 @@ def _cameras(node: hou.Node) -> list[wedges.Camera]:
         )
     paths.sort(key=lambda path: path != wedges.SHOT_CAMERA)
     return [wedges.Camera(path, display.path()) for path in paths]
+
+
+def _check_drawn(node: hou.Node, camera: wedges.Camera) -> None:
+    """Refuse a cache the flipbook doesn't draw, since every wedge's flipbook
+    would then look the same."""
+    if camera.lop is None:
+        drawn = [
+            n
+            for n in hou.node(
+                "/obj"
+            ).allSubChildren()  # ty: ignore[unresolved-attribute]
+            if isinstance(n, hou.ObjNode) and n.isDisplayFlagSet()
+        ]
+        where = "No object displayed in /obj uses"
+    else:
+        drawn = [n for n in (hou.node(camera.lop),) if n is not None]
+        where = f"{camera.lop} doesn't use"
+    if any(node in caches.reached(n) for n in drawn):
+        return
+    raise SendRefused(
+        f"{where} {node.name()}, so every wedge's flipbook would look the "
+        f"same. Display a node that uses {node.name()}, then Send again."
+    )
 
 
 def _ancestors(node: hou.Node) -> list[hou.Node]:

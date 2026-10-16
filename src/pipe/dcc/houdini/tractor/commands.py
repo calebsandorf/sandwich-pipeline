@@ -29,11 +29,6 @@ CACHE_MODULE = "pipe.dcc.houdini.tractor.cache"
 WEDGE_MODULE = "pipe.dcc.houdini.tractor.wedge"
 WEDGE_SIM = "sim"
 WEDGE_FLIPBOOK = "flipbook"
-# The OpenGL ROP draws only through an X server that lets it in, and without a
-# DISPLAY it uses :0. On a blade :0 is the login screen's, which refuses the
-# job, and Qt then aborts hython (job 17227). So the flipbook starts its own
-# server. Xvnc reads every cookie in its -auth file, whatever display it names,
-# so the cookie is written before the display number is known.
 PRIVATE_DISPLAY = [
     "x=$(mktemp -d)",
     "cookie=$(mcookie)",
