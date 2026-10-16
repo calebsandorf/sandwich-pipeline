@@ -50,49 +50,65 @@ _last_rows: dict[str, list[wedge_dialog.Row]] = {}
 
 
 def send(node: hou.Node) -> None:
-    """Ask what to wedge, then spool one job that sims and flipbooks each wedge."""
+    """Ask what to wedge. The dialog's Send spools the job."""
     try:
-        prepared = _prepare(node)
+        check(node)
+        cameras = _cameras(node)
+    except SendRefused as refusal:
+        refuse(str(refusal))
+        return
+    path = node.path()
+    start, end = (int(v) for v in node.evalParmTuple("f")[:2])
+    wedge_dialog.show(
+        runtime.get_main_qt_window(),
+        node,
+        title(node, " wedges"),
+        (start, end),
+        cameras,
+        _last_rows.get(path, []),
+        lambda rows: _wedges(_node(path), rows),
+        lambda choice: _submit(path, choice),
+    )
+
+
+def _submit(path: str, choice: wedge_dialog.WedgeChoice) -> None:
+    """Spool one job that sims and flipbooks each wedge."""
+    _last_rows[path] = choice.rows
+    try:
+        node = _node(path)
+        check(node)
+        built, run = _build(node, choice)
     except SendRefused as refusal:
         refuse(str(refusal))
         return
     except Exception:
-        log.exception("Building the wedge job for %s failed", node.path())
+        log.exception("Building the wedge job for %s failed", path)
         refuse(BUILD_FAILED, traceback.format_exc())
         return
-    if prepared is None:
-        return
-    built, run = prepared
 
     job_id = spool(built, run.title)
     if job_id is None:
         note(node, COMMENT, f"{COMMENT} {run.folder.name}: not confirmed by Tractor")
         return
     hou.ui.displayMessage(
-        f"Job {job_id} sims {len(run.wedges)} wedges of {node.path()} into\n"
+        f"Job {job_id} sims {len(run.wedges)} wedges of {path} into\n"
         f"{run.folder}\n\nPress Review Wedges to play the finished ones.",
         title="Job sent to Tractor",
     )
     note(node, COMMENT, f"{COMMENT} {run.folder.name}: job {job_id}")
 
 
-def _prepare(node: hou.Node) -> tuple[author.Job, wedges.Run] | None:
-    """The job and the run it sims, or None when cancelled."""
-    check(node)
-    cameras = _cameras(node)
-    start, end = (int(v) for v in node.evalParmTuple("f")[:2])
-    choice = wedge_dialog.prompt(
-        runtime.get_main_qt_window(),
-        node,
-        title(node, " wedges"),
-        (start, end),
-        cameras,
-        _last_rows.get(node.path(), []),
-        lambda rows: _wedges(node, rows),
-    )
-    if choice is None:
-        return None
-    _last_rows[node.path()] = choice.rows
+def _node(path: str) -> hou.Node:
+    # The dialog stays open while the artist works, who may delete or rename it.
+    node = hou.node(path)
+    if node is None:
+        raise SendRefused(f"{path} is gone. Press Wedge on Tractor on the node again.")
+    return node
+
+
+def _build(
+    node: hou.Node, choice: wedge_dialog.WedgeChoice
+) -> tuple[author.Job, wedges.Run]:
     folder = claim(node)
     try:
         hip = Path(hou.hipFile.path())

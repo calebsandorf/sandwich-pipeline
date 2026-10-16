@@ -39,7 +39,11 @@ class WedgeChoice:
     rows: list[Row]
 
 
-def prompt(
+# The last dialog of each node, raised when its button is pressed again.
+_dialogs: dict[str, _WedgeDialog] = {}
+
+
+def show(
     parent: QtWidgets.QWidget | None,
     node: hou.Node,
     title: str,
@@ -47,12 +51,20 @@ def prompt(
     cameras: list[Camera],
     rows: list[Row],
     check: Check,
-) -> WedgeChoice | None:
-    """Open the dialog. None means send nothing. `cameras[0]` is the default."""
-    dialog = _WedgeDialog(parent, node, title, frames, cameras, rows, check)
-    if not dialog.exec_():
-        return None
-    return dialog.choice()
+    send: Callable[[WedgeChoice], None],
+) -> None:
+    """Open the dialog, which calls `send` on Send. `cameras[0]` is the default."""
+    path = node.path()
+    old = _dialogs.get(path)
+    if old is not None and old.isVisible():
+        old.raise_()
+        old.activateWindow()
+        return
+    if old is not None:
+        old.deleteLater()
+    dialog = _WedgeDialog(parent, node, title, frames, cameras, rows, check, send)
+    _dialogs[path] = dialog
+    dialog.show()
 
 
 def count(rows: list[Row]) -> int:
@@ -116,6 +128,7 @@ class _WedgeDialog(QtWidgets.QDialog, DialogButtons):
         cameras: list[Camera],
         rows: list[Row],
         check: Check,
+        send: Callable[[WedgeChoice], None],
     ) -> None:
         super().__init__(parent)
         self._init_buttons(True, "Send", "Cancel")
@@ -124,6 +137,7 @@ class _WedgeDialog(QtWidgets.QDialog, DialogButtons):
         self._default_title = title
         self._cameras = cameras
         self._check = check
+        self._send = send
         self._wedges: list[Wedge] = []
         self._fields: list[tuple[_ParmField, QtWidgets.QLineEdit]] = []
 
@@ -212,6 +226,7 @@ class _WedgeDialog(QtWidgets.QDialog, DialogButtons):
             QtWidgets.QMessageBox.warning(self, self.windowTitle(), str(refusal))
             return
         super().accept()
+        self._send(self.choice())
 
     def choice(self) -> WedgeChoice:
         return WedgeChoice(
