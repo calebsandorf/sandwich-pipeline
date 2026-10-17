@@ -7,6 +7,8 @@ flipbooks some of its frames, or finishes its flipbook once every frame is drawn
 
 Sim and flipbook set the wedge's values and point the cache into the wedge's
 folder, so the flipbook draws the scene as the sim saw it, reading the wedge's cache.
+The flipbook looks through the shot camera at the stage of the hip's publish node,
+or at only the cache's output under that camera.
 """
 
 from __future__ import annotations
@@ -30,7 +32,6 @@ from pipe.dcc.houdini.tractor.commands import (
 )
 
 # The Flipbook ROP's Source menu.
-OBJ_SOURCE = 0
 LOP_SOURCE = 1
 RAW = "raw"
 SCRATCH = f"{wedges.FLIPBOOK}.tmp"
@@ -78,7 +79,7 @@ def _parse(argv: list[str] | None) -> argparse.Namespace:
 def flipbook(
     run: wedges.Run, wedge: wedges.Wedge, folder: Path, start: int, end: int
 ) -> int:
-    """Draw `start` to `end` through the run's camera and burn the wedge's values on.
+    """Draw `start` to `end` through the shot camera and burn the wedge's values on.
 
     The frames are written aside, for `finish` to rename into place, so review
     never lists a wedge whose flipbook is half written.
@@ -88,7 +89,7 @@ def flipbook(
     raw = scratch / f"{RAW}.{start}-{end}"
     shutil.rmtree(raw, ignore_errors=True)
     raw.mkdir(parents=True)
-    rop = _flipbook_rop(run.camera)
+    rop = _flipbook_rop(run)
     if rop is None:
         return 1
     rop.setParms({"picture": str(raw / f"{RAW}.$F4.png")})
@@ -131,33 +132,59 @@ def finish(run: wedges.Run, folder: Path) -> int:
     return 0
 
 
-def _flipbook_rop(camera: wedges.Camera) -> hou.RopNode | None:
-    """A Flipbook ROP that draws the scene as the run chose, or None after
-    saying why it can't."""
+def _flipbook_rop(run: wedges.Run) -> hou.RopNode | None:
+    """A Flipbook ROP that draws what the run chose, or None after saying why it
+    can't."""
+    publish = hou.node(run.publish)
+    if not isinstance(publish, hou.LopNode):
+        print(f"The snapshot has no publish node {run.publish}.", file=sys.stderr)
+        return None
+    drawn = publish if run.draw == wedges.SHOT else _cache_only(publish, run.node)
+    # A missing camera prim draws a blank frame without an error.
+    if not drawn.stage().GetPrimAtPath(wedges.SHOT_CAMERA):
+        print(
+            f"The stage of {run.publish} has no camera {wedges.SHOT_CAMERA}.",
+            file=sys.stderr,
+        )
+        return None
     # The viewport's renderer. The OpenGL ROP reloads every texture each frame,
     # which made a textured set minutes per frame.
     rop = hou.node("/out").createNode("flipbook")  # ty: ignore[unresolved-attribute]
-    if camera.lop is None:
-        if hou.node(camera.path) is None:
-            print(f"The snapshot has no camera {camera.path}.", file=sys.stderr)
-            return None
-        rop.setParms({"opsource": OBJ_SOURCE, "camera": camera.path})
-    else:
-        lop = hou.node(camera.lop)
-        # A missing camera prim draws a blank frame without an error.
-        if not isinstance(lop, hou.LopNode) or not lop.stage().GetPrimAtPath(
-            camera.path
-        ):
-            print(
-                f"The stage of {camera.lop} has no camera {camera.path}.",
-                file=sys.stderr,
-            )
-            return None
-        rop.setParms(
-            {"opsource": LOP_SOURCE, "loppath": camera.lop, "cameraprim": camera.path}
-        )
-    rop.setParms({"trange": 1, "f3": 1})
+    rop.setParms(
+        {
+            "opsource": LOP_SOURCE,
+            "loppath": drawn.path(),
+            "cameraprim": wedges.SHOT_CAMERA,
+            "trange": 1,
+            "f3": 1,
+        }
+    )
     return rop  # ty: ignore[invalid-return-type]
+
+
+def _cache_only(publish: hou.LopNode, node: str) -> hou.LopNode:
+    """A stage of the cache's output alone, under the publish node's shot camera.
+
+    The publish node has no output, so the camera is kept from its input.
+    """
+    stage = publish.parent()
+    camera = stage.createNode("prune")
+    camera.setInput(0, publish.input(0))
+    camera.setParms(
+        {
+            "primpattern1": wedges.SHOT_CAMERA,
+            "pruneunselected": 1,
+            "method": "deactivate",
+        }
+    )
+    # SOP Import draws the geometry where the SOP has it, without any transform
+    # of the object around it. Sims are made in world space.
+    geometry = stage.createNode("sopimport")
+    geometry.setParms({"soppath": node})
+    merge = stage.createNode("merge")
+    merge.setInput(0, camera)
+    merge.setInput(1, geometry)
+    return merge  # ty: ignore[invalid-return-type]
 
 
 def _hud(run: wedges.Run, wedge: wedges.Wedge, start: int) -> HudContent:

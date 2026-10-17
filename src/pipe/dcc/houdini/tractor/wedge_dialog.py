@@ -1,5 +1,5 @@
-"""The Wedge Send dialog: the parms to wedge and their values, the frames, the
-camera, and how the job is named and run."""
+"""The Wedge Send dialog: the parms to wedge and their values, the frames, what
+the flipbook draws, and how the job is named and run."""
 
 from __future__ import annotations
 
@@ -14,7 +14,8 @@ from Qt import QtGui, QtWidgets
 from pipe.core.ui.dialogs import DialogButtons
 from pipe.dcc.houdini.tractor import SendRefused
 from pipe.dcc.houdini.tractor.cache_dialog import BLADES, PRIORITY
-from pipe.dcc.houdini.tractor.wedges import Camera, Wedge
+from pipe.dcc.houdini.tractor import wedges
+from pipe.dcc.houdini.tractor.wedges import Wedge
 
 # A parm path and the values typed for it.
 Row = tuple[str, str]
@@ -23,6 +24,12 @@ Check = Callable[[list[Row]], list[Wedge]]
 
 # One wedge is just a farm sim.
 MINIMUM = 2
+# The Draw menu, the default first.
+DRAWS = {"Shot": wedges.SHOT, "Cache only": wedges.CACHE}
+DRAW_HELP = (
+    "Shot draws the stage at the publish node, through the shot camera.\n"
+    "Cache only draws just this cache, through the same camera."
+)
 _WIDTH = 520
 # Houdini's own icon for removing a multiparm instance.
 _REMOVE_ICON = "BUTTONS_multi_remove"
@@ -35,7 +42,7 @@ class WedgeChoice:
     service: str
     start: int
     end: int
-    camera: Camera
+    draw: str
     wedges: list[Wedge]
     # As typed, so the next dialog for this node starts from them.
     rows: list[Row]
@@ -50,12 +57,11 @@ def show(
     node: hou.Node,
     title: str,
     frames: tuple[int, int],
-    cameras: list[Camera],
     rows: list[Row],
     check: Check,
     send: Callable[[WedgeChoice], None],
 ) -> None:
-    """Open the dialog, which calls `send` on Send. `cameras[0]` is the default."""
+    """Open the dialog, which calls `send` on Send."""
     path = node.path()
     old = _dialogs.get(path)
     if old is not None and old.isVisible():
@@ -64,7 +70,7 @@ def show(
         return
     if old is not None:
         old.deleteLater()
-    dialog = _WedgeDialog(parent, node, title, frames, cameras, rows, check, send)
+    dialog = _WedgeDialog(parent, node, title, frames, rows, check, send)
     _dialogs[path] = dialog
     dialog.show()
 
@@ -127,7 +133,6 @@ class _WedgeDialog(QtWidgets.QDialog, DialogButtons):
         node: hou.Node,
         title: str,
         frames: tuple[int, int],
-        cameras: list[Camera],
         rows: list[Row],
         check: Check,
         send: Callable[[WedgeChoice], None],
@@ -137,7 +142,6 @@ class _WedgeDialog(QtWidgets.QDialog, DialogButtons):
         self.setWindowTitle(f"Wedge {node.name()} on Tractor")
         self.setMinimumWidth(_WIDTH)
         self._default_title = title
-        self._cameras = cameras
         self._check = check
         self._send = send
         self._wedges: list[Wedge] = []
@@ -166,8 +170,9 @@ class _WedgeDialog(QtWidgets.QDialog, DialogButtons):
             frame_row.addWidget(box)
         frame_row.addStretch(1)
 
-        self._camera = QtWidgets.QComboBox()
-        self._camera.addItems([camera.path for camera in cameras])
+        self._draw = QtWidgets.QComboBox()
+        self._draw.addItems(list(DRAWS))
+        self._draw.setToolTip(DRAW_HELP)
 
         self._grid = QtWidgets.QGridLayout()
         self._grid.setContentsMargins(0, 0, 0, 0)
@@ -185,7 +190,7 @@ class _WedgeDialog(QtWidgets.QDialog, DialogButtons):
         form.addRow("Priority", self._priority)
         form.addRow("Blades", self._blades)
         form.addRow("Frames", frame_row)
-        form.addRow("Camera", self._camera)
+        form.addRow("Draw", self._draw)
         form.addRow("Wedge", wedge_column)
         form.addRow("", self._count)
 
@@ -259,7 +264,7 @@ class _WedgeDialog(QtWidgets.QDialog, DialogButtons):
             service=BLADES[self._blades.currentText()],
             start=self._start.value(),
             end=self._end.value(),
-            camera=self._cameras[self._camera.currentIndex()],
+            draw=DRAWS[self._draw.currentText()],
             wedges=self._wedges,
             rows=self.rows(),
         )

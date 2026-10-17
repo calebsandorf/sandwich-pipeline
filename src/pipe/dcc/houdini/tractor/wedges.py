@@ -24,8 +24,12 @@ RECORD = "wedge.json"
 FLIPBOOK = "flipbook"
 # The frames' file name before the frame number, as the viewer reads them.
 FRAMES = "flipbook"
-# The shot camera prim of every published shot.
+# The shot camera prim of every published shot, which every flipbook looks through.
 SHOT_CAMERA = "/cameras/shotCam"
+# What a flipbook draws: the stage at the hip's publish node, which is the shot
+# as the department would publish it, or only the sent cache's output.
+SHOT = "shot"
+CACHE = "cache"
 # File Cache 2.0 builds its path from a base folder, unless it is given a file.
 CONSTRUCTED = 0
 # The most frames a flipbook task draws. Each task loads the scene and its
@@ -33,13 +37,6 @@ CONSTRUCTED = 0
 FLIPBOOK_CHUNK = 30
 
 Value = float | int | str
-
-
-@dataclass(frozen=True)
-class Camera:
-    # An /obj camera node, or a camera prim on the stage of `lop`.
-    path: str
-    lop: str | None = None
 
 
 @dataclass(frozen=True)
@@ -58,7 +55,9 @@ class Run:
     start: int
     end: int
     fps: float
-    camera: Camera
+    # The hip's publish node, whose stage holds the shot camera.
+    publish: str
+    draw: str
     wedges: list[Wedge]
 
     @property
@@ -87,7 +86,8 @@ def write_record(run: Run) -> Path:
         "node": run.node,
         "frames": [run.start, run.end],
         "fps": run.fps,
-        "camera": {"path": run.camera.path, "lop": run.camera.lop},
+        "publish": run.publish,
+        "draw": run.draw,
         "wedges": [{"name": w.name, "values": w.values} for w in run.wedges],
     }
     path.write_text(json.dumps(data, indent=2))
@@ -105,7 +105,8 @@ def read_record(path: Path) -> Run:
         start=start,
         end=end,
         fps=data["fps"],
-        camera=Camera(**data["camera"]),
+        publish=data["publish"],
+        draw=data["draw"],
         wedges=[Wedge(w["name"], w["values"]) for w in data["wedges"]],
     )
 

@@ -13,9 +13,10 @@ from pathlib import Path
 
 import hou
 import tractor.api.author as author
-from pxr import UsdGeom
 
+from pipe.core.publish import Refused
 from pipe.dcc.houdini import runtime
+from pipe.dcc.houdini.publish import version
 from pipe.dcc.houdini.tractor import (
     SendRefused,
     caches,
@@ -40,8 +41,6 @@ from pipe.dcc.houdini.util.nodetypes import FILE_CACHE
 
 # The line of a node's comment that names its last wedge run.
 COMMENT = "Tractor wedges"
-LOP_IMPORT_CAMERA = "lopimportcam"
-OBJ_CAMERAS = ("cam", LOP_IMPORT_CAMERA)
 
 log = logging.getLogger(__name__)
 
@@ -53,8 +52,7 @@ def send(node: hou.Node) -> None:
     """Ask what to wedge. The dialog's Send spools the job."""
     try:
         check(node)
-        cameras = _cameras(node)
-        _check_drawn(node, cameras[0])
+        _publish()
     except SendRefused as refusal:
         refuse(str(refusal))
         return
@@ -65,7 +63,6 @@ def send(node: hou.Node) -> None:
         node,
         title(node, " wedges"),
         (start, end),
-        cameras,
         _last_rows.get(path, []),
         lambda rows: _wedges(_node(path), rows),
         lambda choice: _submit(path, choice),
@@ -78,8 +75,10 @@ def _submit(path: str, choice: wedge_dialog.WedgeChoice) -> None:
     try:
         node = _node(path)
         check(node)
-        _check_drawn(node, choice.camera)
-        built, run = _build(node, choice)
+        publish = _publish()
+        if choice.draw == wedges.SHOT:
+            _check_published(node, publish)
+        built, run = _build(node, publish, choice)
     except SendRefused as refusal:
         refuse(str(refusal))
         return
@@ -109,7 +108,7 @@ def _node(path: str) -> hou.Node:
 
 
 def _build(
-    node: hou.Node, choice: wedge_dialog.WedgeChoice
+    node: hou.Node, publish: hou.LopNode, choice: wedge_dialog.WedgeChoice
 ) -> tuple[author.Job, wedges.Run]:
     folder = claim(node)
     try:
@@ -122,7 +121,8 @@ def _build(
             start=choice.start,
             end=choice.end,
             fps=hou.fps(),
-            camera=choice.camera,
+            publish=publish.path(),
+            draw=choice.draw,
             wedges=choice.wedges,
         )
         spec = commands.Wedges(
@@ -143,83 +143,31 @@ def _build(
     return built, run
 
 
-def _cameras(node: hou.Node) -> list[wedges.Camera]:
-    """What the flipbook can look through, the default first. A cache inside
-    the stage is drawn from the stage, and one in /obj from /obj."""
-    lop = next((n for n in _ancestors(node) if isinstance(n, hou.LopNode)), None)
-    if lop is None:
-        return _obj_cameras()
-    # A LOP's parent is a LOP network, which has a display node.
-    display = lop.parent().displayNode()  # ty: ignore[unresolved-attribute]
-    if not isinstance(display, hou.LopNode):
-        raise SendRefused(f"{lop.parent().path()} has no display node to flipbook.")
-    paths = [
-        str(prim.GetPath())
-        for prim in display.stage().Traverse()
-        if prim.IsA(UsdGeom.Camera)
-    ]
-    if not paths:
+def _publish() -> hou.LopNode:
+    """The hip's publish node, whose stage every flipbook looks through the
+    shot camera of."""
+    try:
+        publish = version.publish_node()
+    except Refused as refusal:
+        raise SendRefused(str(refusal)) from None
+    if not publish.stage().GetPrimAtPath(wedges.SHOT_CAMERA):
         raise SendRefused(
-            f"The stage at {display.path()} has no camera to flipbook the wedges "
-            "through. Load the shot camera, then Send again."
+            f"The stage at {publish.path()} has no {wedges.SHOT_CAMERA} to flipbook "
+            "the wedges through. Load the shot camera, then Send again."
         )
-    paths.sort(key=lambda path: path != wedges.SHOT_CAMERA)
-    return [wedges.Camera(path, display.path()) for path in paths]
+    return publish
 
 
-def _check_drawn(node: hou.Node, camera: wedges.Camera) -> None:
-    """Refuse a cache the flipbook doesn't draw, since every wedge's flipbook
-    would then look the same."""
-    if camera.lop is None:
-        drawn = [
-            n
-            for n in hou.node(
-                "/obj"
-            ).allSubChildren()  # ty: ignore[unresolved-attribute]
-            if isinstance(n, hou.ObjNode) and n.isDisplayFlagSet()
-        ]
-        where = "No object displayed in /obj uses"
-    else:
-        drawn = [n for n in (hou.node(camera.lop),) if n is not None]
-        where = f"{camera.lop} doesn't use"
-    if any(node in caches.reached(n) for n in drawn):
+def _check_published(node: hou.Node, publish: hou.LopNode) -> None:
+    """Refuse a Shot flipbook of a cache the publish node doesn't reach, since
+    every wedge's flipbook would then look the same."""
+    if node in caches.reached(publish):
         return
     raise SendRefused(
-        f"{where} {node.name()}, so every wedge's flipbook would look the "
-        f"same. Display a node that uses {node.name()}, then Send again."
+        f"{publish.path()} doesn't use {node.name()}, so a Shot flipbook would "
+        f"show no change. Wire {node.name()} into what the hip publishes, or "
+        "draw Cache only."
     )
-
-
-def _ancestors(node: hou.Node) -> list[hou.Node]:
-    found = []
-    parent = node.parent()
-    while parent is not None:
-        found.append(parent)
-        parent = parent.parent()
-    return found
-
-
-def _obj_cameras() -> list[wedges.Camera]:
-    # A LOP Import Camera brings in the shot camera, and the viewport's camera
-    # is the one the artist flipbooks through.
-    viewer = hou.ui.paneTabOfType(hou.paneTabType.SceneViewer)
-    looking = (
-        viewer.curViewport().camera() if isinstance(viewer, hou.SceneViewer) else None
-    )
-    found = [
-        node
-        for node in hou.node(
-            "/obj"
-        ).allSubChildren()  # ty: ignore[unresolved-attribute]
-        if isinstance(node, hou.ObjNode) and node.type().name() in OBJ_CAMERAS
-    ]
-    if not found:
-        raise SendRefused(
-            "There is no camera in /obj to flipbook the wedges through. Add a "
-            "LOP Import Camera of the shot camera, then Send again."
-        )
-    found.sort(key=lambda n: (n.type().name() != LOP_IMPORT_CAMERA, n != looking))
-    return [wedges.Camera(n.path()) for n in found]
 
 
 def _wedges(node: hou.Node, rows: list[wedge_dialog.Row]) -> list[wedges.Wedge]:
