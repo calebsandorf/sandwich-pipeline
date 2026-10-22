@@ -86,6 +86,22 @@ def upstream(node: hou.Node) -> list[hou.Node]:
     return [n for n in reached(node) if n != node and sendable(n)]
 
 
+def between(sources: list[hou.Node], target: hou.Node) -> list[hou.Node]:
+    """The File Caches loading from disk that `target` reads any of `sources`
+    through, each after the caches it reads. Each stands in for everything
+    behind it, so a change at a source reaches `target` only once the cache is
+    written again."""
+    found = []
+    for cache in reached(target):
+        if cache == target or cache in sources or cache.type().name() != FILE_CACHE:
+            continue
+        if cache.evalParm(LOAD_FROM_DISK):
+            behind = reached(cache)
+            if any(source in behind for source in sources):
+                found.append(cache)
+    return found
+
+
 def reached(
     node: hou.Node, stop: Callable[[hou.Node], bool] = lambda _: False
 ) -> list[hou.Node]:

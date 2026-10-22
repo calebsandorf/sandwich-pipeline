@@ -9,7 +9,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 import hou
-from Qt import QtGui, QtWidgets
+from Qt import QtCore, QtGui, QtWidgets
 
 from pipe.core.ui.dialogs import DialogButtons
 from pipe.dcc.houdini.tractor import SendRefused
@@ -30,6 +30,11 @@ DRAW_HELP = (
     "Shot draws the stage at the publish node, through the shot camera.\n"
     "Cache only draws just this cache, through the same camera."
 )
+AFTER_HELP = (
+    "Caches loading from disk between this one and the publish node.\n"
+    "A checked cache is written again from each wedge, into the wedge's folder.\n"
+    "An unchecked one keeps its files."
+)
 _WIDTH = 520
 # Houdini's own icon for removing a multiparm instance.
 _REMOVE_ICON = "BUTTONS_multi_remove"
@@ -43,6 +48,8 @@ class WedgeChoice:
     start: int
     end: int
     draw: str
+    # The paths of the caches checked under Cache after.
+    after: list[str]
     wedges: list[Wedge]
     # As typed, so the next dialog for this node starts from them.
     rows: list[Row]
@@ -57,11 +64,13 @@ def show(
     node: hou.Node,
     title: str,
     frames: tuple[int, int],
+    after: list[hou.Node],
     rows: list[Row],
     check: Check,
     send: Callable[[WedgeChoice], None],
 ) -> None:
-    """Open the dialog, which calls `send` on Send."""
+    """Open the dialog, which calls `send` on Send. `after` lists the caches
+    loading from disk between the node and the publish node."""
     path = node.path()
     old = _dialogs.get(path)
     if old is not None and old.isVisible():
@@ -70,7 +79,7 @@ def show(
         return
     if old is not None:
         old.deleteLater()
-    dialog = _WedgeDialog(parent, node, title, frames, rows, check, send)
+    dialog = _WedgeDialog(parent, node, title, frames, after, rows, check, send)
     _dialogs[path] = dialog
     dialog.show()
 
@@ -133,6 +142,7 @@ class _WedgeDialog(QtWidgets.QDialog, DialogButtons):
         node: hou.Node,
         title: str,
         frames: tuple[int, int],
+        after: list[hou.Node],
         rows: list[Row],
         check: Check,
         send: Callable[[WedgeChoice], None],
@@ -173,6 +183,16 @@ class _WedgeDialog(QtWidgets.QDialog, DialogButtons):
         self._draw = QtWidgets.QComboBox()
         self._draw.addItems(list(DRAWS))
         self._draw.setToolTip(DRAW_HELP)
+        self._draw.currentTextChanged.connect(self._update_after)
+
+        # Checked, since a cache keeping its files hides the wedge behind it.
+        self._after = QtWidgets.QListWidget()
+        self._after.setToolTip(AFTER_HELP)
+        for cache in after:
+            item = QtWidgets.QListWidgetItem(cache.path())
+            item.setFlags(item.flags() | QtCore.Qt.ItemIsUserCheckable)
+            item.setCheckState(QtCore.Qt.Checked)
+            self._after.addItem(item)
 
         self._grid = QtWidgets.QGridLayout()
         self._grid.setContentsMargins(0, 0, 0, 0)
@@ -191,6 +211,8 @@ class _WedgeDialog(QtWidgets.QDialog, DialogButtons):
         form.addRow("Blades", self._blades)
         form.addRow("Frames", frame_row)
         form.addRow("Draw", self._draw)
+        if after:
+            form.addRow("Cache after", self._after)
         form.addRow("Wedge", wedge_column)
         form.addRow("", self._count)
 
@@ -241,6 +263,10 @@ class _WedgeDialog(QtWidgets.QDialog, DialogButtons):
             if parm.text().strip() or values.text().strip()
         ]
 
+    def _update_after(self) -> None:
+        # Cache only draws the wedged cache alone, so nothing after it matters.
+        self._after.setEnabled(DRAWS[self._draw.currentText()] == wedges.SHOT)
+
     def _update_count(self) -> None:
         total = count(self.rows())
         self._count.setText(f"{total} wedge" if total == 1 else f"{total} wedges")
@@ -265,6 +291,11 @@ class _WedgeDialog(QtWidgets.QDialog, DialogButtons):
             start=self._start.value(),
             end=self._end.value(),
             draw=DRAWS[self._draw.currentText()],
+            after=[
+                item.text()
+                for item in (self._after.item(i) for i in range(self._after.count()))
+                if item.checkState() == QtCore.Qt.Checked
+            ],
             wedges=self._wedges,
             rows=self.rows(),
         )

@@ -18,8 +18,9 @@ one per chunk of frames otherwise:
 A wedge Send's job sims each wedge, flipbooks it a chunk of frames per task,
 then finishes the flipbook:
 
-    Flipbook w01            after both, in order
-    ├── Sim w01
+    Flipbook w01            after all of its children, in order
+    ├── Sim w01 <node>      one per cache the wedge writes, upstream first
+    ├── Sim w01 <node>
     └── Draw w01
         ├── Draw w01 1001-1030
         └── Draw w01 1031-1060
@@ -129,13 +130,16 @@ def wedge_job(
     for name in names:
         finish = commands.wedge(spec, name, commands.WEDGE_FINISH)
         task = _task(f"Flipbook {name}", finish, service=service)
-        # The flipbook reads the sim's cache.
+        # Each cache reads the ones written before it, and the flipbook all of them.
         task.serialsubtasks = True
-        sim = commands.wedge(spec, name, commands.WEDGE_SIM)
-        task.addChild(_task(f"Sim {name}", sim, service=service))
+        for path in spec.caches:
+            sim = commands.wedge(spec, name, commands.WEDGE_SIM, (path,))
+            node = path.rpartition("/")[2]
+            task.addChild(_task(f"Sim {name} {node}", sim, service=service))
         draw = author.Task(title=f"Draw {name}")
         for start, end in spec.chunks:
-            script = commands.wedge(spec, name, commands.WEDGE_FLIPBOOK, (start, end))
+            frames = (str(start), str(end))
+            script = commands.wedge(spec, name, commands.WEDGE_FLIPBOOK, frames)
             title = f"Draw {name} {start}-{end}"
             draw.addChild(_task(title, script, [commands.WEDGE_DRAW_FAILED], service))
         task.addChild(draw)

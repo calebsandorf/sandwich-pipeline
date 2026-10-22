@@ -37,7 +37,6 @@ from pipe.dcc.houdini.tractor.cache_send import (
     title,
     write_snapshot,
 )
-from pipe.dcc.houdini.util.nodetypes import FILE_CACHE
 
 # The line of a node's comment that names its last wedge run.
 COMMENT = "Tractor wedges"
@@ -52,7 +51,7 @@ def send(node: hou.Node) -> None:
     """Ask what to wedge. The dialog's Send spools the job."""
     try:
         check(node)
-        _publish()
+        publish = _publish()
     except SendRefused as refusal:
         refuse(str(refusal))
         return
@@ -63,6 +62,7 @@ def send(node: hou.Node) -> None:
         node,
         title(node, " wedges"),
         (start, end),
+        caches.between([node], publish),
         _last_rows.get(path, []),
         lambda rows: _wedges(_node(path), rows),
         lambda choice: _submit(path, choice),
@@ -76,9 +76,8 @@ def _submit(path: str, choice: wedge_dialog.WedgeChoice) -> None:
         node = _node(path)
         check(node)
         publish = _publish()
-        if choice.draw == wedges.SHOT:
-            _check_published(node, publish)
-        built, run = _build(node, publish, choice)
+        written = _written(node, publish, choice)
+        built, run = _build(node, publish, choice, written)
     except SendRefused as refusal:
         refuse(str(refusal))
         return
@@ -91,9 +90,13 @@ def _submit(path: str, choice: wedge_dialog.WedgeChoice) -> None:
     if job_id is None:
         note(node, COMMENT, f"{COMMENT} {run.folder.name}: not confirmed by Tractor")
         return
+    what = f"sims {len(run.wedges)} wedges of {node.name()}"
+    if len(written) > 1:
+        names = ", ".join(cache.name() for cache in written)
+        what = f"writes {names} for each of {len(run.wedges)} wedges of {node.name()}"
     hou.ui.displayMessage(
-        f"Job {job_id} sims {len(run.wedges)} wedges of {path} into\n"
-        f"{run.folder}\n\nPress Review Wedges to play the finished ones.",
+        f"Job {job_id} {what} into\n{run.folder}\n\n"
+        "Press Review Wedges to play the finished ones.",
         title="Job sent to Tractor",
     )
     note(node, COMMENT, f"{COMMENT} {run.folder.name}: job {job_id}")
@@ -107,8 +110,26 @@ def _node(path: str) -> hou.Node:
     return node
 
 
-def _build(
+def _written(
     node: hou.Node, publish: hou.LopNode, choice: wedge_dialog.WedgeChoice
+) -> list[hou.Node]:
+    """The caches each wedge writes, in cook order: those a wedged parm reaches
+    the node through, the node, and those checked under Cache after."""
+    parms = [_parm(path).node() for path in choice.wedges[0].values]
+    before = caches.between(parms, node)
+    if choice.draw != wedges.SHOT:
+        return [*before, node]
+    between = caches.between([node], publish)
+    after = [cache for cache in between if cache.path() in choice.after]
+    _check_published(node, publish, [cache for cache in between if cache not in after])
+    return [*before, node, *after]
+
+
+def _build(
+    node: hou.Node,
+    publish: hou.LopNode,
+    choice: wedge_dialog.WedgeChoice,
+    written: list[hou.Node],
 ) -> tuple[author.Job, wedges.Run]:
     folder = claim(node)
     try:
@@ -123,10 +144,11 @@ def _build(
             fps=hou.fps(),
             publish=publish.path(),
             draw=choice.draw,
+            caches=[cache.path() for cache in written],
             wedges=choice.wedges,
         )
         spec = commands.Wedges(
-            wedges.write_record(run), environment(), wedges.chunks(run)
+            wedges.write_record(run), environment(), wedges.chunks(run), run.caches
         )
         names = [wedge.name for wedge in run.wedges]
         # Made now, so Review's Delete tells a wedge yet to run from a deleted one.
@@ -158,15 +180,27 @@ def _publish() -> hou.LopNode:
     return publish
 
 
-def _check_published(node: hou.Node, publish: hou.LopNode) -> None:
-    """Refuse a Shot flipbook of a cache the publish node doesn't reach, since
+def _check_published(
+    node: hou.Node, publish: hou.LopNode, kept: list[hou.Node]
+) -> None:
+    """Refuse a Shot flipbook of a cache the publish node doesn't reach, or
+    reaches only through the `kept` caches, which keep their files, since
     every wedge's flipbook would then look the same."""
-    if node in caches.reached(publish):
+    if node in caches.reached(publish, stop=kept.__contains__):
         return
+    # Outermost first: the walk lists a node after what it cooks from, and
+    # writing a cache behind another kept one changes nothing.
+    for cache in reversed(kept):
+        if node in caches.reached(cache):
+            raise SendRefused(
+                f"{publish.path()} reaches {node.name()} only through {cache.path()}, "
+                "which keeps its files, so a Shot flipbook would show no change. "
+                "Check it under Cache after, or draw Cache only."
+            )
     raise SendRefused(
         f"{publish.path()} doesn't use {node.name()}, so a Shot flipbook would "
-        f"show no change. Wire {node.name()} into what the hip publishes, or "
-        "draw Cache only."
+        f"show no change. Draw Cache only, or wire {node.name()} into what the "
+        "hip publishes."
     )
 
 
@@ -181,7 +215,6 @@ def _wedges(node: hou.Node, rows: list[wedge_dialog.Row]) -> list[wedges.Wedge]:
             values = wedges.parse(parm, text)
         except ValueError as error:
             raise SendRefused(str(error)) from None
-        _check_reach(node, parm)
         parsed.append((parm.path(), values))
     return wedges.combine(parsed)
 
@@ -201,26 +234,3 @@ def _parm(path: str) -> hou.Parm:
             f"{parms[0].name()}."
         )
     raise SendRefused(f"There is no parm {path}.")
-
-
-def _check_reach(node: hou.Node, parm: hou.Parm) -> None:
-    """Refuse a parm that reaches the cache only through a cache loading from
-    disk, since every wedge would then come back the same."""
-
-    def loads(other: hou.Node) -> bool:
-        return (
-            other != node
-            and other.type().name() == FILE_CACHE
-            and bool(other.evalParm(caches.LOAD_FROM_DISK))
-        )
-
-    target = parm.node()
-    if target in caches.reached(node, stop=loads):
-        return
-    for cache in caches.reached(node):
-        if loads(cache) and target in caches.reached(cache):
-            raise SendRefused(
-                f"{wedges.label(parm.path())} reaches {node.name()} only through "
-                f"{cache.path()}, which loads from disk, so every wedge would come "
-                "back the same. Turn off its Load from Disk, then Send again."
-            )

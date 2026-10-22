@@ -1,14 +1,15 @@
 """What a Wedge Send task runs on a blade: hython sims one wedge of a run,
 flipbooks some of its frames, or finishes its flipbook once every frame is drawn.
 
-    hython -m pipe.dcc.houdini.tractor.wedge <wedge.json> <wedge> sim
+    hython -m pipe.dcc.houdini.tractor.wedge <wedge.json> <wedge> sim <cache>
     hython -m pipe.dcc.houdini.tractor.wedge <wedge.json> <wedge> flipbook <start> <end>
     hython -m pipe.dcc.houdini.tractor.wedge <wedge.json> <wedge> finish
 
-Sim and flipbook set the wedge's values and point the cache into the wedge's
-folder, so the flipbook draws the scene as the sim saw it, reading the wedge's cache.
-The flipbook looks through the shot camera at the stage of the hip's publish node,
-or at only the cache's output under that camera.
+Sim and flipbook set the wedge's values and point every cache the wedge writes
+into the wedge's folder. A sim writes one of them, reading those written before
+it, and the flipbook reads them all, drawing the scene as the sims saw it. It
+looks through the shot camera at the stage of the hip's publish node, or at
+only the wedged cache's output under that camera.
 """
 
 from __future__ import annotations
@@ -22,8 +23,8 @@ import hou
 
 from pipe.core.hud import HudContent
 from pipe.core.playblast.encoding import burn_hud_frames
-from pipe.dcc.houdini.tractor import cache, wedges
-from pipe.dcc.houdini.tractor.caches import LOAD_FROM_DISK
+from pipe.dcc.houdini.tractor import cache, caches, wedges
+from pipe.dcc.houdini.tractor.caches import LOAD_FROM_DISK, SIMULATION
 from pipe.dcc.houdini.tractor.commands import (
     WEDGE_DRAW_FAILED,
     WEDGE_FINISH,
@@ -49,16 +50,20 @@ def main(argv: list[str] | None = None) -> int:
     if missing:
         print(f"The snapshot has no parm {', '.join(missing)}.", file=sys.stderr)
         return 1
-    node = hou.node(run.node)
-    if node is None:
-        print(f"The snapshot has no node {run.node}.", file=sys.stderr)
-        return 1
-    wedges.redirect(node, folder)
+    written: list[hou.Node] = []
+    for path in run.caches:
+        node = hou.node(path)
+        if node is None:
+            print(f"The snapshot has no node {path}.", file=sys.stderr)
+            return 1
+        wedges.redirect(node, folder)
+        written.append(node)
     if args.step == WEDGE_SIM:
-        return cache.write(run.node, run.start, run.end)
-    # The flipbook reads the cache the sim wrote, as the artist's viewport would.
-    node.setParms({LOAD_FROM_DISK: 1})
-    start, end = args.frames
+        return sim(run, written, args.args[0])
+    # The flipbook reads what the sims wrote, as the artist's viewport would.
+    for node in written:
+        node.setParms({LOAD_FROM_DISK: 1})
+    start, end = (int(frame) for frame in args.args)
     return flipbook(run, wedge, folder, start, end)
 
 
@@ -68,12 +73,34 @@ def _parse(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("wedge", help="the wedge's name in the record")
     parser.add_argument("step", choices=(WEDGE_SIM, WEDGE_FLIPBOOK, WEDGE_FINISH))
     parser.add_argument(
-        "frames", type=int, nargs="*", help="a flipbook's start and end"
+        "args", nargs="*", help="the cache a sim writes, or a flipbook's start and end"
     )
     args = parser.parse_args(argv)
-    if (args.step == WEDGE_FLIPBOOK) != (len(args.frames) == 2):
-        parser.error("flipbook takes a start and end frame, and only flipbook does")
+    wanted = {WEDGE_SIM: 1, WEDGE_FLIPBOOK: 2, WEDGE_FINISH: 0}[args.step]
+    if len(args.args) != wanted:
+        parser.error(f"{args.step} takes {wanted} arguments, not {len(args.args)}")
     return args
+
+
+def sim(run: wedges.Run, written: list[hou.Node], path: str) -> int:
+    """Write one of the wedge's caches, reading those written before it from
+    the wedge's folder. The exit code."""
+    if path not in run.caches:
+        print(f"The run doesn't write {path}.", file=sys.stderr)
+        return 1
+    index = run.caches.index(path)
+    for node in written[:index]:
+        node.setParms({LOAD_FROM_DISK: 1})
+    if path == run.node:
+        return cache.write(path, run.start, run.end)
+    # The other caches keep their own frames, as Save to Disk would write them,
+    # but none outside the run's, which no flipbook draws. A sim still starts
+    # where it always does, since each frame cooks from the last.
+    chunks = caches.chunks(written[index])
+    start, end = chunks[0][0], min(chunks[-1][1], run.end)
+    if not written[index].evalParm(SIMULATION):
+        start = max(start, run.start)
+    return cache.write(path, start, end)
 
 
 def flipbook(

@@ -97,6 +97,8 @@ class Wedges:
     env: dict[str, str]
     # The start and end frame of each flipbook task.
     chunks: list[tuple[int, int]]
+    # The paths of the caches each wedge writes, in cook order.
+    caches: list[str]
 
 
 @dataclass(frozen=True)
@@ -169,11 +171,10 @@ def cache(spec: Cache, start: float, end: float) -> str:
     return "\n".join([*_exports(spec.env), shlex.join(hython)])
 
 
-def wedge(spec: Wedges, name: str, step: str, frames: tuple[int, ...] = ()) -> str:
-    """One step of one wedge, with a flipbook's start and end frame. Exported
-    like `cache`, and failing with hython's exit code."""
-    hython = ["hython", "-m", WEDGE_MODULE, str(spec.record), name, step]
-    hython += [str(frame) for frame in frames]
+def wedge(spec: Wedges, name: str, step: str, args: tuple[str, ...] = ()) -> str:
+    """One step of one wedge, with the cache a sim writes or a flipbook's start
+    and end frame. Exported like `cache`, and failing with hython's exit code."""
+    hython = ["hython", "-m", WEDGE_MODULE, str(spec.record), name, step, *args]
     display = PRIVATE_DISPLAY if step == WEDGE_FLIPBOOK else []
     return "\n".join([*_exports(spec.env), *display, shlex.join(hython)])
 
