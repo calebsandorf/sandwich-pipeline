@@ -4,9 +4,11 @@ from the Send's snapshot of the hip.
     hython -m pipe.dcc.houdini.tractor.cache <snapshot> <hip> <node> <start> <end>
 
 The File Cache reads a missing or truncated frame as empty geometry with only a
-warning, and a shorter save leaves an earlier save's frames behind. So the task
-deletes the frames it is about to write, loads each one back after writing, and
-exits non-zero when any does not load, which fails the task in Tractor.
+warning, and a frame the ROP skips keeps an earlier save's file. So the task
+touches a marker before writing, and passes a frame only if it is newer than the
+marker and loads back. Any other frame exits non-zero, which fails the task in
+Tractor. The earlier frames stay until they are written over, so the artist's
+scene still loads them while the task runs, and after it fails.
 """
 
 from __future__ import annotations
@@ -23,6 +25,8 @@ from pipe.dcc.houdini.util.nodetypes import FILE_CACHE
 ROP = "render"
 # A step is a float; this keeps the last frame in when float steps fall just short of it.
 STEP_TOLERANCE = 1e-6
+# Touched before the ROP writes; a frame older than it is an earlier save's.
+MARKER = ".tractor_writing"
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -35,15 +39,24 @@ def write(path: str, start: float, end: float) -> int:
     """Write the File Cache at `path` from `start` to `end`. The exit code."""
     rop = _rop(path)
     files = [_output(rop, frame) for frame in _frames(rop, start, end)]
-    for file in files:
-        file.unlink(missing_ok=True)
-    if rop.evalParm("trange"):
-        rop.render(frame_range=(start, end), output_progress=True)
-    else:
-        rop.render(output_progress=True)
-    unreadable = [file for file in files if not _loads(file)]
+    # Beside the frames, so the file server stamps both and blade clocks don't
+    # matter. Named by the range, since a cache's chunks write the same folder.
+    marker = files[0].parent / f"{MARKER}.{start:g}-{end:g}"
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    # Created anew, since touching an existing file may keep its time on NFS.
+    marker.unlink(missing_ok=True)
+    marker.touch()
+    started = marker.stat().st_mtime_ns
+    try:
+        if rop.evalParm("trange"):
+            rop.render(frame_range=(start, end), output_progress=True)
+        else:
+            rop.render(output_progress=True)
+    finally:
+        marker.unlink(missing_ok=True)
+    unreadable = [file for file in files if not _fresh(file, started)]
     for file in unreadable:
-        print(f"Not written, or not readable: {file}", file=sys.stderr)
+        print(f"Not written by this task, or not readable: {file}", file=sys.stderr)
     if unreadable:
         print(
             f"{len(unreadable)} of {len(files)} frames of {path} failed.",
@@ -103,7 +116,11 @@ def _output(rop: hou.RopNode, frame: float) -> Path:
     return Path(_parm(rop, "sopoutput").evalAsStringAtFrame(frame))
 
 
-def _loads(file: Path) -> bool:
+def _fresh(file: Path, started: int) -> bool:
+    """Whether this task wrote `file` and it loads. An earlier save's frame is
+    seconds older than the marker at least, so a tie is a frame just written."""
+    if not file.is_file() or file.stat().st_mtime_ns < started:
+        return False
     try:
         hou.Geometry().loadFromFile(str(file))
     except hou.OperationFailed:
