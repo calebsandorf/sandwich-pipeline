@@ -1,7 +1,7 @@
 """What a Cache Send task runs on a blade: hython writes one File Cache's frames
 from the Send's snapshot of the hip.
 
-    hython -m pipe.dcc.houdini.tractor.cache <snapshot> <hip> <node> <start> <end>
+    hython -m pipe.dcc.houdini.tractor.cache_task <snapshot> <hip> <node> <start> <end>
 
 The File Cache reads a missing or truncated frame as empty geometry with only a
 warning, and a frame the ROP skips keeps an earlier save's file. So the task

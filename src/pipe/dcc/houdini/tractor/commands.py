@@ -24,9 +24,9 @@ LICENSE_TRAP = rf'trap "test \$? -eq 3 && hserver -S {LICENSE_SERVER} && exit 3"
 HUSK_SEGFAULT = "Fatal error: Segmentation fault"
 SEGFAULT_EXIT = 139
 # Run by hython on the blade: writes one File Cache from a Send's snapshot.
-CACHE_MODULE = "pipe.dcc.houdini.tractor.cache"
+CACHE_MODULE = "pipe.dcc.houdini.tractor.cache_task"
 # Run by hython on the blade: sims, flipbooks or finishes one wedge of a Wedge Send.
-WEDGE_MODULE = "pipe.dcc.houdini.tractor.wedge"
+WEDGE_MODULE = "pipe.dcc.houdini.tractor.wedge_task"
 WEDGE_SIM = "sim"
 WEDGE_FLIPBOOK = "flipbook"
 WEDGE_FINISH = "finish"

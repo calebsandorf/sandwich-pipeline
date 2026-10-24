@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import hou
 
-from pipe.dcc.houdini.tractor.cache import ROP, STEP_TOLERANCE
+from pipe.dcc.houdini.tractor.cache_task import ROP, STEP_TOLERANCE
 from pipe.dcc.houdini.util.nodetypes import FILE_CACHE
 
 BUTTON = "skd_cache_send"

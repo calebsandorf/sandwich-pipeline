@@ -1,9 +1,9 @@
 """What a Wedge Send task runs on a blade: hython sims one wedge of a run,
 flipbooks some of its frames, or finishes its flipbook once every frame is drawn.
 
-    hython -m pipe.dcc.houdini.tractor.wedge <wedge.json> <wedge> sim <cache>
-    hython -m pipe.dcc.houdini.tractor.wedge <wedge.json> <wedge> flipbook <start> <end>
-    hython -m pipe.dcc.houdini.tractor.wedge <wedge.json> <wedge> finish
+    hython -m pipe.dcc.houdini.tractor.wedge_task <wedge.json> <wedge> sim <cache>
+    hython -m pipe.dcc.houdini.tractor.wedge_task <wedge.json> <wedge> flipbook <start> <end>
+    hython -m pipe.dcc.houdini.tractor.wedge_task <wedge.json> <wedge> finish
 
 Sim and flipbook set the wedge's values and point every cache the wedge writes
 into its own folder in the wedge's. A sim writes one of them over the frames the
@@ -24,7 +24,7 @@ import hou
 
 from pipe.core.hud import HudContent
 from pipe.core.playblast.encoding import burn_hud_frames
-from pipe.dcc.houdini.tractor import cache, snapshot, wedges
+from pipe.dcc.houdini.tractor import cache_task, snapshot, wedges
 from pipe.dcc.houdini.tractor.caches import LOAD_FROM_DISK
 from pipe.dcc.houdini.tractor.commands import (
     WEDGE_DRAW_FAILED,
@@ -93,7 +93,7 @@ def sim(run: wedges.Run, written: list[hou.Node], path: str) -> int:
     index = paths.index(path)
     for node in written[:index]:
         node.setParms({LOAD_FROM_DISK: 1})
-    return cache.write(path, run.caches[index].start, run.caches[index].end)
+    return cache_task.write(path, run.caches[index].start, run.caches[index].end)
 
 
 def flipbook(
