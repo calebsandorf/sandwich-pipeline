@@ -19,6 +19,7 @@ from pathlib import Path
 
 import hou
 
+from pipe.dcc.houdini.tractor import snapshot
 from pipe.dcc.houdini.util.nodetypes import FILE_CACHE
 
 # The ROP inside File Cache 2.0 that its Save to Disk button presses.
@@ -31,7 +32,7 @@ MARKER = ".tractor_writing"
 
 def main(argv: list[str] | None = None) -> int:
     args = _parse(argv)
-    load(args.snapshot, args.hip)
+    snapshot.load(args.snapshot, args.hip)
     return write(args.node, args.start, args.end)
 
 
@@ -75,18 +76,6 @@ def _parse(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("start", type=float)
     parser.add_argument("end", type=float)
     return parser.parse_args(argv)
-
-
-def load(snapshot: Path, hip: Path) -> None:
-    """Load the snapshot as if it were the artist's hip."""
-    try:
-        hou.hipFile.load(str(snapshot), suppress_save_prompt=True)
-    except hou.LoadWarning as warning:
-        # The scene did load; the artist's own session showed the same warnings.
-        print(warning, file=sys.stderr)
-    # The snapshot sits under the hip's geo folder, so loading it moved $HIP and
-    # $HIPNAME, which every default cache path is built from.
-    hou.hipFile.setName(str(hip))
 
 
 def _rop(path: str) -> hou.RopNode:

@@ -24,7 +24,7 @@ import hou
 
 from pipe.core.hud import HudContent
 from pipe.core.playblast.encoding import burn_hud_frames
-from pipe.dcc.houdini.tractor import cache, wedges
+from pipe.dcc.houdini.tractor import cache, snapshot, wedges
 from pipe.dcc.houdini.tractor.caches import LOAD_FROM_DISK
 from pipe.dcc.houdini.tractor.commands import (
     WEDGE_DRAW_FAILED,
@@ -46,7 +46,7 @@ def main(argv: list[str] | None = None) -> int:
     folder = run.folder / wedge.name
     if args.step == WEDGE_FINISH:
         return finish(run, folder)
-    cache.load(run.snapshot, run.hip)
+    snapshot.load(run.snapshot, run.hip)
     missing = wedges.set_values(wedge)
     if missing:
         print(f"The snapshot has no parm {', '.join(missing)}.", file=sys.stderr)

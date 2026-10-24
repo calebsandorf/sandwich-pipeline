@@ -13,7 +13,7 @@ from Qt import QtGui, QtWidgets
 
 from pipe.core.ui.dialogs import DialogButtons
 from pipe.dcc.houdini.tractor import SendRefused
-from pipe.dcc.houdini.tractor.cache_dialog import BLADES, PRIORITY
+from pipe.dcc.houdini.tractor.job import BLADES, PRIORITY
 from pipe.dcc.houdini.tractor import wedges
 
 # A parm path and the values typed for it.

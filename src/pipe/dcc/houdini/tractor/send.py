@@ -23,6 +23,7 @@ from pxr import Sdf, Tf, Usd, UsdRender
 from pipe.core.playblast.presets import FFmpegPreset
 from pipe.core.publish import current_version, loaded_version, pin, version_name
 from pipe.core.render import RENDER_USD
+from pipe.dcc.houdini import launch
 from pipe.dcc.houdini.tractor import (
     SendRefused,
     commands,
@@ -58,6 +59,8 @@ ENV_VARS = (
     "RMAN_PROCEDURALPATH",
     "RMANTREE",
 )
+# Set by Open Shot for the substep sync HDA, and never saved in the hip.
+SHOT_VARS = ("SHOT_SUBSTEPS",)
 # Task titles join the layer to other words with spaces, and Tractor finds
 # tasks by title, so a layer with a space could take another layer's title.
 LAYER_NAME = re.compile(r"[A-Za-z0-9_-]+")
@@ -425,3 +428,11 @@ def _setenv() -> str:
 
 def _kind(node: hou.Node) -> str:
     return node.type().nameComponents()[2]
+
+
+def environment() -> dict[str, str]:
+    """The session's values of what a blade needs to load the hip as it did."""
+    names = {name for name, value in launch.environment().items() if value is not None}
+    names.update(ENV_VARS, SHOT_VARS)
+    # hou.getenv sees what hou.putenv set, which os.environ doesn't.
+    return {name: value for name in sorted(names) if (value := hou.getenv(name))}

@@ -22,21 +22,19 @@ from pipe.dcc.houdini.tractor import (
     caches,
     commands,
     job,
+    snapshot,
     wedge_dialog,
     wedges,
 )
 from pipe.dcc.houdini.tractor.cache_send import (
     BUILD_FAILED,
-    SNAPSHOT,
     check,
-    claim,
-    environment,
     note,
     refuse,
     spool,
     title,
-    write_snapshot,
 )
+from pipe.dcc.houdini.tractor.send import environment
 
 # The line of a node's comment that names its last wedge run.
 COMMENT = "Tractor wedges"
@@ -148,12 +146,12 @@ def _build(
     found: list[wedges.Wedge],
     written: list[hou.Node],
 ) -> tuple[author.Job, wedges.Run]:
-    folder = claim(node)
+    folder = snapshot.claim(node)
     try:
         hip = Path(hou.hipFile.path())
         run = wedges.Run(
             title=choice.title,
-            snapshot=folder / f"{SNAPSHOT}{hip.suffix}",
+            snapshot=folder / f"{snapshot.SNAPSHOT}{hip.suffix}",
             hip=hip,
             node=node.path(),
             start=choice.start,
@@ -175,7 +173,7 @@ def _build(
         built = job.wedge_job(
             choice.title, choice.priority, choice.service, spec, names
         )
-        write_snapshot(run.snapshot)
+        snapshot.write(run.snapshot)
     except BaseException:
         # Nothing has read the folder yet.
         shutil.rmtree(folder)

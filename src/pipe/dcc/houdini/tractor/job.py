@@ -40,6 +40,11 @@ from pipe.dcc.houdini.tractor.commands import Cache, Layer, Wedges
 # offers EL9, and each offers the name of its profile.
 SERVICE = "EL9"
 MONSTERS = "Monster_EL9"
+# Monsters are blades nobody sits at, so a sim of hours is not killed when a
+# student logs in.
+BLADES = {"Monsters only": MONSTERS, "Any blade": SERVICE}
+# The range and default of Tractor Submit's Priority.
+PRIORITY = (0, 50, 10)
 
 RENDER_RETRIES = [
     3,  # Can't get license

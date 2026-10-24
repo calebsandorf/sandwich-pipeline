@@ -11,12 +11,6 @@ from pipe.core.ui.dialogs import DialogButtons
 from pipe.dcc.houdini.tractor import job
 from pipe.dcc.houdini.tractor.caches import LOAD_FROM_DISK
 
-# Monsters are blades nobody sits at, so a sim of hours is not killed when a
-# student logs in.
-BLADES = {"Monsters only": job.MONSTERS, "Any blade": job.SERVICE}
-# The range and default of Tractor Submit's Priority.
-PRIORITY = (0, 50, 10)
-
 _WIDTH = 420
 
 
@@ -62,13 +56,13 @@ class _CacheDialog(QtWidgets.QDialog, DialogButtons):
         self._title = QtWidgets.QLineEdit()
         self._title.setPlaceholderText(title)
 
-        low, high, default = PRIORITY
+        low, high, default = job.PRIORITY
         self._priority = QtWidgets.QSpinBox()
         self._priority.setRange(low, high)
         self._priority.setValue(default)
 
         self._blades = QtWidgets.QComboBox()
-        self._blades.addItems(list(BLADES))
+        self._blades.addItems(list(job.BLADES))
 
         form = QtWidgets.QFormLayout()
         form.addRow("Title", self._title)
@@ -101,6 +95,6 @@ class _CacheDialog(QtWidgets.QDialog, DialogButtons):
         return CacheChoice(
             title=self._title.text().strip() or self._default_title,
             priority=self._priority.value(),
-            service=BLADES[self._blades.currentText()],
+            service=job.BLADES[self._blades.currentText()],
             first=checked,
         )

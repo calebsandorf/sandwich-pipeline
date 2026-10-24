@@ -9,12 +9,10 @@ from pathlib import Path
 
 import hou
 
-from pipe.core.cache import SIM_DIRNAME
 from pipe.core.playblast import PreviewClip
 from pipe.core.playblast.viewer import ClipAction, open_viewer
 from pipe.dcc.houdini import runtime
-from pipe.dcc.houdini.tractor import wedges
-from pipe.dcc.houdini.tractor.cache_send import SEND_FOLDER
+from pipe.dcc.houdini.tractor import snapshot, wedges
 
 TITLE = "Review Wedges"
 
@@ -23,7 +21,7 @@ def review(node: hou.Node) -> None:
     runs = _runs(node)
     if not runs:
         hou.ui.displayMessage(
-            f"No wedge run in {_folder(node)} was sent from {node.path()}. A node "
+            f"No wedge run in {snapshot.folder(node)} was sent from {node.path()}. A node "
             "renamed or moved since leaves its runs behind. Wedge on Tractor "
             "sends one.",
             title=TITLE,
@@ -74,15 +72,10 @@ def review(node: hou.Node) -> None:
 
 def _runs(node: hou.Node) -> list[wedges.Run]:
     """The node's wedge runs, newest first."""
-    records = sorted(_folder(node).glob(f"v*/{wedges.RECORD}"), reverse=True)
+    records = sorted(snapshot.folder(node).glob(f"v*/{wedges.RECORD}"), reverse=True)
     # Two nodes of one name share a Send folder.
     runs = [wedges.read_record(record) for record in records]
     return [run for run in runs if run.node == node.path()]
-
-
-def _folder(node: hou.Node) -> Path:
-    hip = Path(hou.text.expandString("$HIP"))
-    return hip / SIM_DIRNAME / SEND_FOLDER / node.name()
 
 
 def _apply(run: wedges.Run, wedge: wedges.Wedge) -> bool:

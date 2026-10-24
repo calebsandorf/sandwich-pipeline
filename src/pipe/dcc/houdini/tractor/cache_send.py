@@ -10,17 +10,17 @@ from pathlib import Path
 import hou
 import tractor.api.author as author
 
-from pipe.core.cache import SIM_DIRNAME, link_to_cache
-from pipe.core.render import next_version
-from pipe.core.util.paths import get_production_path
-from pipe.dcc.houdini import launch, runtime
-from pipe.dcc.houdini.tractor import SendRefused, cache_dialog, caches, commands, job
-from pipe.dcc.houdini.tractor.send import ENV_VARS
+from pipe.dcc.houdini import runtime
+from pipe.dcc.houdini.tractor import (
+    SendRefused,
+    cache_dialog,
+    caches,
+    commands,
+    job,
+    snapshot,
+)
+from pipe.dcc.houdini.tractor.send import environment
 
-SEND_FOLDER = ".tractor"
-SNAPSHOT = "scene"
-# Set by Open Shot for the substep sync HDA, and never saved in the hip.
-SHOT_VARS = ("SHOT_SUBSTEPS",)
 # The line of a node's comment that names its last job.
 COMMENT = "Tractor job"
 # File Cache's file name before the version, which Save to Disk hardens.
@@ -105,17 +105,17 @@ def _prepare(node: hou.Node) -> tuple[author.Job, str, list[hou.Node]] | None:
     if choice is None:
         return None
     sent = [*choice.first, node]
-    folder = claim(node)
+    folder = snapshot.claim(node)
     try:
         hip = Path(hou.hipFile.path())
-        snapshot = folder / f"{SNAPSHOT}{hip.suffix}"
+        scene = folder / f"{snapshot.SNAPSHOT}{hip.suffix}"
         env = environment()
         specs = [
-            commands.Cache(snapshot, hip, cache.path(), caches.chunks(cache), env)
+            commands.Cache(scene, hip, cache.path(), caches.chunks(cache), env)
             for cache in sent
         ]
         built = job.cache_job(choice.title, choice.priority, choice.service, specs)
-        _write_loading(snapshot, sent)
+        _write_loading(scene, sent)
     except BaseException:
         # Nothing has read the folder yet.
         shutil.rmtree(folder)
@@ -164,29 +164,7 @@ def _frames(node: hou.Node) -> str:
     return f"{start:g}" if start == end else f"{start:g} to {end:g}"
 
 
-def claim(node: hou.Node) -> Path:
-    """Creates a folder on disk: the next version of the node's Send folder."""
-    geo = Path(hou.text.expandString("$HIP")) / SIM_DIRNAME
-    # Only Open Shot links a hip's geo folder to the cache mount.
-    if geo.is_relative_to(get_production_path()):
-        link_to_cache(geo)
-    folder = next_version(geo / SEND_FOLDER / node.name())
-    try:
-        folder.mkdir(parents=True)
-    except OSError as error:
-        raise SendRefused(f"Could not create {folder}: {error.strerror}.") from None
-    return folder
-
-
-def environment() -> dict[str, str]:
-    """The session's values of what a blade needs to load the hip as it did."""
-    names = {name for name, value in launch.environment().items() if value is not None}
-    names.update(ENV_VARS, SHOT_VARS)
-    # hou.getenv sees what hou.putenv set, which os.environ doesn't.
-    return {name: value for name in sorted(names) if (value := hou.getenv(name))}
-
-
-def _write_loading(snapshot: Path, sent: list[hou.Node]) -> None:
+def _write_loading(scene: Path, sent: list[hou.Node]) -> None:
     """Writes the snapshot as Save to Disk would leave the sent caches, so
     each reads what the ones before it write. The live caches load from disk
     only once Tractor confirms the job."""
@@ -203,7 +181,7 @@ def _write_loading(snapshot: Path, sent: list[hou.Node]) -> None:
     with hou.undos.disabler():
         _load_from_disk(sent)
         try:
-            write_snapshot(snapshot)
+            snapshot.write(scene)
         finally:
             for parm, data in zip(parms, kept, strict=True):
                 parm.setFromData(data)  # ty: ignore[unresolved-attribute]
@@ -218,16 +196,6 @@ def _load_from_disk(sent: list[hou.Node]) -> None:
     for cache in sent[:-1]:
         cache.setParms({caches.LOAD_FROM_DISK: 1})
     sent[-1].hdaModule().enableLoadFromDisk(sent[-1])
-
-
-def write_snapshot(path: Path) -> None:
-    """Writes the session to `path`, unsaved edits included.
-
-    Unlike saving, `mwrite -n` leaves the session's file name and `$HIP` alone.
-    """
-    _, error = hou.hscript(f'mwrite -n "{path}"')
-    if error or not path.is_file():
-        raise SendRefused(f"Could not write the scene to {path}.\n\n{error}")
 
 
 def note(node: hou.Node, prefix: str, line: str) -> None:
