@@ -43,8 +43,9 @@ COMMENT = "Tractor wedges"
 
 log = logging.getLogger(__name__)
 
-# The rows last sent for each node this session, so the next round starts from them.
-_last_rows: dict[str, list[wedge_dialog.Row]] = {}
+# The rows last sent for each node by its session id, so the next round starts
+# from them.
+_last_rows: dict[int, list[wedge_dialog.Row]] = {}
 
 
 def send(node: hou.Node) -> None:
@@ -55,43 +56,45 @@ def send(node: hou.Node) -> None:
     except SendRefused as refusal:
         refuse(str(refusal))
         return
-    path = node.path()
+    # The stubs say sessionId() returns None. It returns the node's id.
+    key: int = node.sessionId()  # ty: ignore[invalid-assignment]
     start, end = (int(v) for v in node.evalParmTuple("f")[:2])
     wedge_dialog.show(
         runtime.get_main_qt_window(),
         node,
         title(node, " wedges"),
         (start, end),
-        _last_rows.get(path, []),
+        _last_rows.get(key, []),
         lambda parms, draw: _written(
-            _node(path), publish, [p.node() for p in parms], draw
+            _node(key), publish, [p.node() for p in parms], draw
         ),
-        lambda rows: _wedges(_node(path), rows),
-        lambda choice: _submit(path, choice),
+        lambda choice: _submit(key, choice),
     )
 
 
-def _submit(path: str, choice: wedge_dialog.WedgeChoice) -> None:
-    """Spool one job that sims and flipbooks each wedge."""
-    _last_rows[path] = choice.rows
+def _submit(key: int, choice: wedge_dialog.WedgeChoice) -> None:
+    """Spool one job that sims and flipbooks each wedge, or raise SendRefused
+    before anything is written."""
+    _last_rows[key] = choice.rows
+    node = _node(key)
+    check(node)
+    publish = _publish()
+    found = _wedges(choice.rows)
+    parms = [_parm(path).node() for path in found[0].values]
+    written = _written(node, publish, parms, choice.draw)
     try:
-        node = _node(path)
-        check(node)
-        publish = _publish()
-        parms = [_parm(path).node() for path in choice.wedges[0].values]
-        written = _written(node, publish, parms, choice.draw)
-        built, run = _build(node, publish, choice, written)
-    except SendRefused as refusal:
-        refuse(str(refusal))
-        return
+        built, run = _build(node, publish, choice, found, written)
+    except SendRefused:
+        # The dialog says why and stays open.
+        raise
     except Exception:
-        log.exception("Building the wedge job for %s failed", path)
+        log.exception("Building the wedge job for %s failed", node.path())
         refuse(BUILD_FAILED, traceback.format_exc())
         return
 
     job_id = spool(built, run.title)
     if job_id is None:
-        note(node, COMMENT, f"{COMMENT} {run.folder.name}: not confirmed by Tractor")
+        note(node, COMMENT, f"{COMMENT} {run.folder.name}: not confirmed")
         return
     what = f"flipbooks {len(run.wedges)} wedges of {node.name()}"
     if written == [node]:
@@ -107,11 +110,15 @@ def _submit(path: str, choice: wedge_dialog.WedgeChoice) -> None:
     note(node, COMMENT, f"{COMMENT} {run.folder.name}: job {job_id}")
 
 
-def _node(path: str) -> hou.Node:
-    # The dialog stays open while the artist works, who may delete or rename it.
-    node = hou.node(path)
+def _node(key: int) -> hou.Node:
+    # The dialog stays open while the artist works, who may delete the node or
+    # open another hip.
+    node = hou.nodeBySessionId(key)
     if node is None:
-        raise SendRefused(f"{path} is gone. Press Wedge on Tractor on the node again.")
+        raise SendRefused(
+            "The node is gone, or its hip was closed. Press Wedge on Tractor on "
+            "it again."
+        )
     return node
 
 
@@ -138,6 +145,7 @@ def _build(
     node: hou.Node,
     publish: hou.LopNode,
     choice: wedge_dialog.WedgeChoice,
+    found: list[wedges.Wedge],
     written: list[hou.Node],
 ) -> tuple[author.Job, wedges.Run]:
     folder = claim(node)
@@ -154,7 +162,7 @@ def _build(
             publish=publish.path(),
             draw=choice.draw,
             caches=[_cache(cache, choice.end) for cache in written],
-            wedges=choice.wedges,
+            wedges=found,
         )
         paths = [cache.path for cache in run.caches]
         spec = commands.Wedges(
@@ -196,7 +204,7 @@ def _publish() -> hou.LopNode:
     return publish
 
 
-def _wedges(node: hou.Node, rows: list[wedge_dialog.Row]) -> list[wedges.Wedge]:
+def _wedges(rows: list[wedge_dialog.Row]) -> list[wedges.Wedge]:
     """Check what the dialog's rows wedge, and make one wedge per combination."""
     parsed: list[tuple[str, list[wedges.Value]]] = []
     for path, text in rows:
@@ -218,6 +226,8 @@ def _parm(path: str) -> hou.Parm:
     if parm is not None:
         if parm.node().isInsideLockedHDA():
             raise SendRefused(f"{path} is inside a locked asset, so it can't be set.")
+        if parm.isLocked():
+            raise SendRefused(f"{path} is locked. Unlock it, then Send again.")
         return parm
     parms = hou.parmTuple(path)
     if parms is not None:

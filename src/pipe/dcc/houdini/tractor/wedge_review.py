@@ -23,7 +23,9 @@ def review(node: hou.Node) -> None:
     runs = _runs(node)
     if not runs:
         hou.ui.displayMessage(
-            f"{node.path()} has no wedge runs. Wedge on Tractor sends one.",
+            f"No wedge run in {_folder(node)} was sent from {node.path()}. A node "
+            "renamed or moved since leaves its runs behind. Wedge on Tractor "
+            "sends one.",
             title=TITLE,
         )
         return
@@ -72,15 +74,41 @@ def review(node: hou.Node) -> None:
 
 def _runs(node: hou.Node) -> list[wedges.Run]:
     """The node's wedge runs, newest first."""
-    folder = Path(hou.text.expandString("$HIP")) / SIM_DIRNAME / SEND_FOLDER
-    records = sorted((folder / node.name()).glob(f"v*/{wedges.RECORD}"), reverse=True)
+    records = sorted(_folder(node).glob(f"v*/{wedges.RECORD}"), reverse=True)
     # Two nodes of one name share a Send folder.
     runs = [wedges.read_record(record) for record in records]
     return [run for run in runs if run.node == node.path()]
 
 
+def _folder(node: hou.Node) -> Path:
+    hip = Path(hou.text.expandString("$HIP"))
+    return hip / SIM_DIRNAME / SEND_FOLDER / node.name()
+
+
 def _apply(run: wedges.Run, wedge: wedges.Wedge) -> bool:
     name = f"{run.folder.name} {wedge.name}"
+    parms = [parm for path in wedge.values if (parm := hou.parm(path)) is not None]
+    locked = [parm.path() for parm in parms if parm.isLocked()]
+    if locked:
+        hou.ui.displayMessage(
+            f"{', '.join(locked)} is locked, so nothing of {name} was set. "
+            "Unlock it, then Apply again.",
+            title=TITLE,
+            severity=hou.severityType.Warning,
+        )
+        return False
+    lost = [f"{parm.path()}: {_held(parm)}" for parm in parms if parm.keyframes()]
+    if lost:
+        pressed = hou.ui.displayMessage(
+            f"Applying {name} replaces what these parms hold:\n" + "\n".join(lost),
+            buttons=("Apply", "Cancel"),
+            default_choice=1,
+            close_choice=1,
+            title=TITLE,
+            severity=hou.severityType.Warning,
+        )
+        if pressed != 0:
+            return False
     with hou.undos.group(f"Apply wedge {name}"):
         missing = wedges.set_values(wedge)
     if missing:
@@ -91,12 +119,27 @@ def _apply(run: wedges.Run, wedge: wedges.Wedge) -> bool:
             severity=hou.severityType.Warning,
         )
         return False
-    hou.ui.setStatusMessage(f"Applied {name}: {', '.join(wedges.describe(wedge))}")
+    hou.ui.setStatusMessage(
+        f"Applied {name}: {', '.join(wedges.describe(wedge))}. "
+        "Save to Disk to cache it."
+    )
     return False
+
+
+def _held(parm: hou.Parm) -> str:
+    keys = parm.keyframes()
+    if len(keys) > 1:
+        return f"{len(keys)} keyframes"
+    # A channel reference is an expression too, such as ch("../tx").
+    return keys[0].expression() if keys[0].isExpressionSet() else "a keyframe"
 
 
 def _delete(run: wedges.Run, wedge: wedges.Wedge) -> bool:
     name = f"{run.folder.name} {wedge.name}"
+    # Deleted from another viewer of the same runs.
+    if not (run.folder / wedge.name).exists():
+        hou.ui.setStatusMessage(f"{name} was already deleted")
+        return True
     pressed = hou.ui.displayMessage(
         f"Delete {name}? Its cache and flipbook can't be recovered.",
         buttons=("Delete", "Cancel"),

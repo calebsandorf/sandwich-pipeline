@@ -23,6 +23,8 @@ SNAPSHOT = "scene"
 SHOT_VARS = ("SHOT_SUBSTEPS",)
 # The line of a node's comment that names its last job.
 COMMENT = "Tractor job"
+# File Cache's file name before the version, which Save to Disk hardens.
+BASE_NAME = "basename"
 BUILD_FAILED = (
     "The job could not be built, so nothing was sent to Tractor. The details "
     "below say what went wrong."
@@ -46,8 +48,14 @@ def send(node: hou.Node) -> None:
         return
     built, title, sent = prepared
 
-    job_id = spool(built, title)
+    job_id = spool(
+        built,
+        title,
+        "Its caches still cook live. Turn on Load from Disk once it has "
+        "written them.",
+    )
     if job_id is not None:
+        _load_from_disk(sent)
         hou.ui.displayMessage(
             f"Job {job_id} caches:\n"
             + "\n".join(cache.path() for cache in sent)
@@ -58,8 +66,9 @@ def send(node: hou.Node) -> None:
         note(cache, COMMENT, _job_line(job_id))
 
 
-def spool(built: author.Job, title: str) -> int | None:
-    """The job's id, or None after warning that Tractor did not confirm it."""
+def spool(built: author.Job, title: str, unconfirmed: str = "") -> int | None:
+    """The job's id, or None after warning that Tractor did not confirm it,
+    ending with `unconfirmed`."""
     try:
         return built.spool(block=True)
     except Exception:
@@ -68,7 +77,8 @@ def spool(built: author.Job, title: str) -> int | None:
         log.exception("Tractor did not confirm the job %s", title)
         hou.ui.displayMessage(
             "Tractor did not confirm the job, but it may still have been queued. "
-            f'Look for "{title}" in Tractor before sending again.',
+            f'Look for "{title}" in Tractor before sending again.\n\n'
+            f"{unconfirmed}".strip(),
             title="Tractor did not confirm the job",
             severity=hou.severityType.Warning,
             details=traceback.format_exc(),
@@ -78,7 +88,7 @@ def spool(built: author.Job, title: str) -> int | None:
 
 def _job_line(job_id: int | None) -> str:
     if job_id is None:
-        return f"{COMMENT} not confirmed by Tractor"
+        return f"{COMMENT} not confirmed"
     return f"{COMMENT} {job_id}"
 
 
@@ -105,8 +115,7 @@ def _prepare(node: hou.Node) -> tuple[author.Job, str, list[hou.Node]] | None:
             for cache in sent
         ]
         built = job.cache_job(choice.title, choice.priority, choice.service, specs)
-        _load_from_disk(choice.first, node)
-        write_snapshot(snapshot)
+        _write_loading(snapshot, sent)
     except BaseException:
         # Nothing has read the folder yet.
         shutil.rmtree(folder)
@@ -177,15 +186,38 @@ def environment() -> dict[str, str]:
     return {name: value for name in sorted(names) if (value := hou.getenv(name))}
 
 
-def _load_from_disk(first: list[hou.Node], node: hou.Node) -> None:
-    """What Save to Disk does after writing, done before the snapshot so the
-    sent cache reads what the Cache first caches write."""
+def _write_loading(snapshot: Path, sent: list[hou.Node]) -> None:
+    """Writes the snapshot as Save to Disk would leave the sent caches, so
+    each reads what the ones before it write. The live caches load from disk
+    only once Tractor confirms the job."""
+    # Every File Cache has both. The stubs say parm() may be None.
+    parms: list[hou.Parm] = [  # ty: ignore[invalid-assignment]
+        cache.parm(name)
+        for cache in sent
+        for name in (BASE_NAME, caches.LOAD_FROM_DISK)
+    ]
+    # Keyframes and expressions included. The stubs leave out asData and
+    # setFromData.
+    kept = [parm.asData() for parm in parms]  # ty: ignore[unresolved-attribute]
+    # Out of the undo list, since the live scene ends up as it was.
+    with hou.undos.disabler():
+        _load_from_disk(sent)
+        try:
+            write_snapshot(snapshot)
+        finally:
+            for parm, data in zip(parms, kept, strict=True):
+                parm.setFromData(data)  # ty: ignore[unresolved-attribute]
+
+
+def _load_from_disk(sent: list[hou.Node]) -> None:
+    """What Save to Disk does after writing. The last cache is the node sent,
+    which keeps its own Load from Disk on Save choice."""
     # File Cache's own Python module, which its Save to Disk button calls.
-    for cache in [*first, node]:
+    for cache in sent:
         cache.hdaModule().hardenBaseName(cache)
-    for cache in first:
+    for cache in sent[:-1]:
         cache.setParms({caches.LOAD_FROM_DISK: 1})
-    node.hdaModule().enableLoadFromDisk(node)
+    sent[-1].hdaModule().enableLoadFromDisk(sent[-1])
 
 
 def write_snapshot(path: Path) -> None:

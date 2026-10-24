@@ -15,12 +15,9 @@ from pipe.core.ui.dialogs import DialogButtons
 from pipe.dcc.houdini.tractor import SendRefused
 from pipe.dcc.houdini.tractor.cache_dialog import BLADES, PRIORITY
 from pipe.dcc.houdini.tractor import wedges
-from pipe.dcc.houdini.tractor.wedges import Wedge
 
 # A parm path and the values typed for it.
 Row = tuple[str, str]
-# Turns the rows into wedges, or raises SendRefused saying what is wrong.
-Check = Callable[[list[Row]], list[Wedge]]
 # The caches each wedge writes, given the wedged parms and the Draw.
 Rebuilds = Callable[[list[hou.Parm], str], list[hou.Node]]
 
@@ -50,13 +47,14 @@ class WedgeChoice:
     start: int
     end: int
     draw: str
-    wedges: list[Wedge]
     # As typed, so the next dialog for this node starts from them.
     rows: list[Row]
 
 
-# The last dialog of each node, raised when its button is pressed again.
-_dialogs: dict[str, _WedgeDialog] = {}
+# The last dialog of each node by its session id, raised when its button is
+# pressed again. Unlike a path, the id survives a rename and names no node of
+# the next hip opened.
+_dialogs: dict[int, _WedgeDialog] = {}
 
 
 def show(
@@ -66,20 +64,21 @@ def show(
     frames: tuple[int, int],
     rows: list[Row],
     rebuilds: Rebuilds,
-    check: Check,
     send: Callable[[WedgeChoice], None],
 ) -> None:
-    """Open the dialog, which calls `send` on Send."""
-    path = node.path()
-    old = _dialogs.get(path)
+    """Open the dialog, which calls `send` on Send and stays open while it
+    raises SendRefused."""
+    # The stubs say sessionId() returns None. It returns the node's id.
+    key: int = node.sessionId()  # ty: ignore[invalid-assignment]
+    old = _dialogs.get(key)
     if old is not None and old.isVisible():
         old.raise_()
         old.activateWindow()
         return
     if old is not None:
         old.deleteLater()
-    dialog = _WedgeDialog(parent, node, title, frames, rows, rebuilds, check, send)
-    _dialogs[path] = dialog
+    dialog = _WedgeDialog(parent, node, title, frames, rows, rebuilds, send)
+    _dialogs[key] = dialog
     dialog.show()
 
 
@@ -143,7 +142,6 @@ class _WedgeDialog(QtWidgets.QDialog, DialogButtons):
         frames: tuple[int, int],
         rows: list[Row],
         rebuilds: Rebuilds,
-        check: Check,
         send: Callable[[WedgeChoice], None],
     ) -> None:
         super().__init__(parent)
@@ -154,9 +152,7 @@ class _WedgeDialog(QtWidgets.QDialog, DialogButtons):
         self._rebuilds = rebuilds
         # The parms and Draw last shown, since walking the scene can take seconds.
         self._shown: tuple[list[hou.Parm], str] | None = None
-        self._check = check
         self._send = send
-        self._wedges: list[Wedge] = []
         self._fields: list[tuple[_ParmField, QtWidgets.QLineEdit]] = []
         # Every widget of each row, in the order of `_fields`.
         self._rows: list[list[QtWidgets.QWidget]] = []
@@ -284,13 +280,12 @@ class _WedgeDialog(QtWidgets.QDialog, DialogButtons):
 
     def accept(self) -> None:
         try:
-            self._wedges = self._check(self.rows())
+            self._send(self.choice())
         except SendRefused as refusal:
             # The dialog stays open, so the rows aren't typed again.
             QtWidgets.QMessageBox.warning(self, self.windowTitle(), str(refusal))
             return
         super().accept()
-        self._send(self.choice())
 
     def choice(self) -> WedgeChoice:
         return WedgeChoice(
@@ -300,6 +295,5 @@ class _WedgeDialog(QtWidgets.QDialog, DialogButtons):
             start=self._start.value(),
             end=self._end.value(),
             draw=DRAWS[self._draw.currentText()],
-            wedges=self._wedges,
             rows=self.rows(),
         )
