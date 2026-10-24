@@ -194,7 +194,14 @@ def _publish() -> hou.LopNode:
         publish = version.publish_node()
     except Refused as refusal:
         raise SendRefused(str(refusal)) from None
-    if not publish.stage().GetPrimAtPath(wedges.SHOT_CAMERA):
+    stage = publish.stage()
+    if stage is None:
+        errors = "\n".join(publish.errors())
+        raise SendRefused(
+            f"The stage at {publish.path()} doesn't cook, so there is nothing to "
+            f"flipbook the wedges with. Fix its errors, then Send again.\n\n{errors}"
+        )
+    if not stage.GetPrimAtPath(wedges.SHOT_CAMERA):
         raise SendRefused(
             f"The stage at {publish.path()} has no {wedges.SHOT_CAMERA} to flipbook "
             "the wedges through. Load the shot camera, then Send again."

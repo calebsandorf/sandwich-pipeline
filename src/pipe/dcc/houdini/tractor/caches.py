@@ -1,4 +1,4 @@
-"""Stock File Cache 2.0 nodes as the farm sees them: the button the site adds,
+"""Stock File Cache 2.0 nodes as the farm sees them: the buttons the site adds,
 the caches upstream of one, and the frames each of its tasks writes."""
 
 from __future__ import annotations
@@ -49,7 +49,8 @@ CHUNK = 10
 
 
 def add_buttons(node: hou.Node) -> None:
-    """Run by the site's event scripts when a File Cache is created or loaded."""
+    """Run by the site's event scripts when a File Cache is created or loaded,
+    and after a save."""
     if node.isInsideLockedHDA():
         return
     group = node.parmTemplateGroup()
@@ -71,6 +72,40 @@ def add_buttons(node: hou.Node) -> None:
         after = name
     if changed:
         node.setParmTemplateGroup(group)
+
+
+def strip_buttons(node: hou.Node) -> None:
+    """Run before a save. Any spare parm makes the hip save the node's whole
+    layout as spares, so the buttons stay out of the file and come back after."""
+    if node.isInsideLockedHDA():
+        return
+    for name, *_ in BUTTONS:
+        if parm := node.parmTuple(name):
+            # The stubs, made for Houdini 19.5, leave this method out.
+            node.removeSpareParmTuple(parm)  # ty: ignore[unresolved-attribute]
+    # Removing the buttons leaves the layout's folders behind as spares, which
+    # warn on the next load. A node with an artist's own spare parm needs them.
+    if all(
+        isinstance(p.parmTemplate(), hou.FolderSetParmTemplate)
+        for p in node.spareParms()
+    ):
+        node.removeSpareParms()
+
+
+def on_save(event: hou.hipFileEventType) -> None:
+    """The site's hip file event callback."""
+    if event == hou.hipFileEventType.BeforeSave:
+        change = strip_buttons
+    elif event == hou.hipFileEventType.AfterSave:
+        change = add_buttons
+    else:
+        return
+    # nodeType is None for a type not installed; File Cache ships with Houdini.
+    file_cache = hou.sopNodeTypeCategory().nodeType(FILE_CACHE)
+    # Neither is the artist's edit, so neither goes on their undo stack.
+    with hou.undos.disabler():
+        for node in file_cache.instances():  # ty: ignore[unresolved-attribute]
+            change(node)
 
 
 def sendable(node: hou.Node) -> bool:

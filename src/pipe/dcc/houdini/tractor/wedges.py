@@ -209,7 +209,8 @@ def redirect(node: hou.Node, folder: Path, index: int) -> None:
     if node.evalParm("filemethod") == CONSTRUCTED:
         node.setParms({"basedir": str(folder)})
         return
-    # Unexpanded, so the name keeps its $OS and $F.
+    # Unexpanded, so the name keeps its $OS and $F. node.parm may return None,
+    # but every File Cache has a file parm.
     file = node.parm("file").unexpandedString()  # ty: ignore[unresolved-attribute]
     node.setParms({"file": str(folder / PurePosixPath(file).name)})
 

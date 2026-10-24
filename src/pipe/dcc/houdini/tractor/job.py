@@ -145,8 +145,8 @@ def wedge_job(
         for start, end in spec.chunks:
             frames = (str(start), str(end))
             script = commands.wedge(spec, name, commands.WEDGE_FLIPBOOK, frames)
-            title = f"Draw {name} {start}-{end}"
-            draw.addChild(_task(title, script, [commands.WEDGE_DRAW_FAILED], service))
+            label = f"Draw {name} {start}-{end}"
+            draw.addChild(_task(label, script, [commands.WEDGE_DRAW_FAILED], service))
         task.addChild(draw)
         job.addChild(task)
     return job

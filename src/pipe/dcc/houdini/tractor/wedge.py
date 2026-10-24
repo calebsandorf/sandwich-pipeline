@@ -160,8 +160,17 @@ def _flipbook_rop(run: wedges.Run) -> hou.RopNode | None:
         print(f"The snapshot has no publish node {run.publish}.", file=sys.stderr)
         return None
     drawn = publish if run.draw == wedges.SHOT else _cache_only(publish, run.node)
+    stage = drawn.stage()
+    if stage is None:
+        print(
+            f"The stage at {drawn.path()} doesn't cook.",
+            *drawn.errors(),
+            sep="\n",
+            file=sys.stderr,
+        )
+        return None
     # A missing camera prim draws a blank frame without an error.
-    if not drawn.stage().GetPrimAtPath(wedges.SHOT_CAMERA):
+    if not stage.GetPrimAtPath(wedges.SHOT_CAMERA):
         print(
             f"The stage of {run.publish} has no camera {wedges.SHOT_CAMERA}.",
             file=sys.stderr,
@@ -169,6 +178,7 @@ def _flipbook_rop(run: wedges.Run) -> hou.RopNode | None:
         return None
     # The viewport's renderer. The OpenGL ROP reloads every texture each frame,
     # which made a textured set minutes per frame.
+    # hou.node may return None, but /out is always there.
     rop = hou.node("/out").createNode("flipbook")  # ty: ignore[unresolved-attribute]
     rop.setParms(
         {
@@ -179,6 +189,7 @@ def _flipbook_rop(run: wedges.Run) -> hou.RopNode | None:
             "f3": 1,
         }
     )
+    # createNode is typed as returning any node; this one is a ROP.
     return rop  # ty: ignore[invalid-return-type]
 
 
@@ -204,6 +215,7 @@ def _cache_only(publish: hou.LopNode, node: str) -> hou.LopNode:
     merge = stage.createNode("merge")
     merge.setInput(0, camera)
     merge.setInput(1, geometry)
+    # createNode is typed as returning any node; this one is a LOP.
     return merge  # ty: ignore[invalid-return-type]
 
 

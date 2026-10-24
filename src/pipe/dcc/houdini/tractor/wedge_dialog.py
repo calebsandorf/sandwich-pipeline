@@ -12,9 +12,8 @@ import hou
 from Qt import QtGui, QtWidgets
 
 from pipe.core.ui.dialogs import DialogButtons
-from pipe.dcc.houdini.tractor import SendRefused
+from pipe.dcc.houdini.tractor import SendRefused, wedges
 from pipe.dcc.houdini.tractor.job import BLADES, PRIORITY
-from pipe.dcc.houdini.tractor import wedges
 
 # A parm path and the values typed for it.
 Row = tuple[str, str]
@@ -35,6 +34,8 @@ REBUILDS_HELP = (
     "cache when a wedged parm changes it."
 )
 _WIDTH = 520
+# A spin box allows 0 to 99 unless told otherwise; frames can be negative.
+_FRAME_LIMIT = 100_000
 # Houdini's own icon for removing a multiparm instance.
 _REMOVE_ICON = "BUTTONS_multi_remove"
 
@@ -172,7 +173,7 @@ class _WedgeDialog(QtWidgets.QDialog, DialogButtons):
         self._end = QtWidgets.QSpinBox()
         frame_row = QtWidgets.QHBoxLayout()
         for box, value in ((self._start, frames[0]), (self._end, frames[1])):
-            box.setRange(-100000, 100000)
+            box.setRange(-_FRAME_LIMIT, _FRAME_LIMIT)
             box.setValue(value)
             box.valueChanged.connect(self._update_count)
             frame_row.addWidget(box)
