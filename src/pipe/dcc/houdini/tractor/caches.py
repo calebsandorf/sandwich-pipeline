@@ -89,48 +89,83 @@ def between(sources: list[hou.Node], target: hou.Node) -> list[hou.Node]:
     through, each after the caches it reads. Each stands in for everything
     behind it, so a change at a source reaches `target` only once the cache is
     written again."""
-    found = []
-    for cache in reached(target):
-        if cache == target or cache in sources or cache.type().name() != FILE_CACHE:
-            continue
-        if cache.evalParm(LOAD_FROM_DISK):
-            behind = reached(cache)
-            if any(source in behind for source in sources):
-                found.append(cache)
-    return found
+    found, steps = _walk(target)
+    wanted = {_id(source) for source in sources}
+    reaches = {step for step in steps if step[0] in wanted}
+    # The steps come after what they cook from, so one pass settles all but a
+    # reference looping back to a step still being walked.
+    changed = True
+    while changed:
+        changed = False
+        for step, feeds in steps.items():
+            if step not in reaches and any(feed in reaches for feed in feeds):
+                reaches.add(step)
+                changed = True
+    reaching = {node for node, _ in reaches}
+    return [
+        cache
+        for cache in found
+        if cache != target
+        and _id(cache) not in wanted
+        and cache.type().name() == FILE_CACHE
+        and cache.evalParm(LOAD_FROM_DISK)
+        and _id(cache) in reaching
+    ]
 
 
 def reached(node: hou.Node) -> list[hou.Node]:
     """Every node `node` cooks from, each after the nodes it cooks from."""
-    found: list[hou.Node] = []
-    seen = {(node.sessionId(), True)}
-    stack = [(node, iter(_feeds(node, True, node)))]
+    return _walk(node)[0]
+
+
+# A node of a walk by its session id, and whether the walk enters it.
+Step = tuple[int, bool]
+
+
+def _walk(start: hou.Node) -> tuple[list[hou.Node], dict[Step, list[Step]]]:
+    """Every node `start` cooks from, each after the nodes it cooks from, and
+    every step of the walk, in the same order, with the steps it cooks from."""
+    found: dict[int, hou.Node] = {}
+    steps: dict[Step, list[Step]] = {}
+    first: Step = (_id(start), True)
+    seen = {first}
+    stack = [(start, first, iter(_feeds(start, True, start)), [])]
     while stack:
-        current, feeds = stack[-1]
+        current, step, feeds, fed = stack[-1]
         nxt = next(feeds, None)
         if nxt is None:
             stack.pop()
-            if current not in found:
-                found.append(current)
+            steps[step] = fed
+            found.setdefault(step[0], current)
             continue
-        if (nxt[0].sessionId(), nxt[1]) not in seen:
-            seen.add((nxt[0].sessionId(), nxt[1]))
-            stack.append((nxt[0], iter(_feeds(nxt[0], nxt[1], node))))
-    return found
+        node, enter = nxt
+        key = (_id(node), enter)
+        fed.append(key)
+        if key not in seen:
+            seen.add(key)
+            stack.append((node, key, iter(_feeds(node, enter, start)), []))
+    return list(found.values()), steps
 
 
-def _feeds(node: hou.Node, whole: bool, sent: hou.Node) -> list[tuple[hou.Node, bool]]:
-    """What `node` cooks from, each with whether to follow it whole."""
+def _feeds(node: hou.Node, enter: bool, start: hou.Node) -> list[tuple[hou.Node, bool]]:
+    """What `node` cooks from, each with whether to enter it. A network holding
+    the node it was reached from, or the walk's start, is downstream of its
+    contents, so only its inputs are followed."""
     inputs = [n for n in node.inputs() if n is not None]
-    if not whole:
-        return [(n, not _within(sent, n)) for n in inputs]
+    if not enter:
+        return [(n, not _within(start, n)) for n in inputs]
     found = inputs + list(node.references(include_children=False))
     # An asset cooks its output node, which needn't carry the display flag.
     found += node.subnetOutputs()
     display = node.displayNode() if isinstance(node, DISPLAYED) else None
     if display is not None:
         found.append(display)
-    return [(n, not (_within(node, n) or _within(sent, n))) for n in found]
+    return [(n, not (_within(node, n) or _within(start, n))) for n in found]
+
+
+def _id(node: hou.Node) -> int:
+    # The stubs say sessionId() returns None. It returns the node's id.
+    return node.sessionId()  # ty: ignore[invalid-return-type]
 
 
 def _within(node: hou.Node, network: hou.Node) -> bool:
