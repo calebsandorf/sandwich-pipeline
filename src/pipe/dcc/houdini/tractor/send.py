@@ -20,6 +20,7 @@ import hou
 import tractor.api.author as author
 from pxr import Sdf, Tf, Usd, UsdRender
 
+from env import Executables
 from pipe.core.playblast.presets import FFmpegPreset
 from pipe.core.publish import current_version, loaded_version, pin, version_name
 from pipe.core.render import RENDER_USD
@@ -38,10 +39,8 @@ CONFIGURE = "tractor_configure"
 DENOISE = "tractor_denoise"
 ENCODE = "tractor_encode_video"
 
-# Sent with the job so the blades find the same Houdini, RenderMan, MoonRay and
-# colour config as the artist's session. MoonRay's Houdini package sets the
-# ARRAS_*, MOONRAY_*, RDL2_* and REZ_* ones; its Hydra plugin itself is found
-# through HOUDINI_PATH.
+# What the render Send's tasks need to run husk, denoise_batch and ffmpeg.
+# Tractor's setenv envkey cuts a value at its first space, and none holds one.
 ENV_VARS = (
     "ARRAS_SESSION_PATH",
     "HOUDINI_PATH",
@@ -56,11 +55,16 @@ ENV_VARS = (
     "REZ_MOONRAY_ROOT",
     "RFHTREE",
     "RMAN_COLOR_CONFIG_DIR",
-    "RMAN_PROCEDURALPATH",
     "RMANTREE",
 )
+# The same on every machine: the license from /etc/profile.d, and RenderMan's
+# install, which names no Houdini build.
+MACHINE_VARS = ("PIXAR_LICENSE_FILE", "RFHTREE", "RMANTREE")
 # Set by Open Shot for the substep sync HDA, and never saved in the hip.
 SHOT_VARS = ("SHOT_SUBSTEPS",)
+# A blade's own PATH has no Houdini, and not even /usr/bin. The Houdini folder
+# is the link each machine points at its own build.
+PATH = os.pathsep.join([str(Executables.hfs / "bin"), "/usr/bin", "/bin"])
 # Task titles join the layer to other words with spaces, and Tractor finds
 # tasks by title, so a layer with a space could take another layer's title.
 LAYER_NAME = re.compile(r"[A-Za-z0-9_-]+")
@@ -421,8 +425,9 @@ def _encode(
 
 
 def _setenv() -> str:
+    env = environment()
     # A variable the session lacks is left for the blade to choose.
-    found = [f"{name}={value}" for name in ENV_VARS if (value := os.getenv(name))]
+    found = [f"{name}={env[name]}" for name in ENV_VARS if name in env]
     return " ".join(["setenv", *found])
 
 
@@ -431,8 +436,19 @@ def _kind(node: hou.Node) -> str:
 
 
 def environment() -> dict[str, str]:
-    """The session's values of what a blade needs to load the hip as it did."""
-    names = {name for name, value in launch.environment().items() if value is not None}
-    names.update(ENV_VARS, SHOT_VARS)
+    """What a blade needs to load the hip as the session did.
+
+    The launcher's values, not the session's: Houdini's packages add paths named
+    for this workstation's build, and on a blade they add the blade's own.
+    """
+    env = {
+        name: str(value)
+        for name, value in launch.environment().items()
+        if value is not None
+    }
+    env["PATH"] = PATH
     # hou.getenv sees what hou.putenv set, which os.environ doesn't.
-    return {name: value for name in sorted(names) if (value := hou.getenv(name))}
+    for name in (*MACHINE_VARS, *SHOT_VARS):
+        if value := hou.getenv(name):
+            env[name] = value
+    return dict(sorted(env.items()))
