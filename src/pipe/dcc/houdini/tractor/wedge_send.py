@@ -144,11 +144,12 @@ def _build(
             fps=hou.fps(),
             publish=publish.path(),
             draw=choice.draw,
-            caches=[cache.path() for cache in written],
+            caches=[_cache(cache, choice.end) for cache in written],
             wedges=choice.wedges,
         )
+        paths = [cache.path for cache in run.caches]
         spec = commands.Wedges(
-            wedges.write_record(run), environment(), wedges.chunks(run), run.caches
+            wedges.write_record(run), environment(), wedges.chunks(run), paths
         )
         names = [wedge.name for wedge in run.wedges]
         # Made now, so Review's Delete tells a wedge yet to run from a deleted one.
@@ -163,6 +164,12 @@ def _build(
         shutil.rmtree(folder)
         raise
     return built, run
+
+
+def _cache(node: hou.Node, end: int) -> wedges.Cache:
+    """The cache's own frames, up to the run's last."""
+    chunks = caches.chunks(node)
+    return wedges.Cache(node.path(), chunks[0][0], min(chunks[-1][1], float(end)))
 
 
 def _publish() -> hou.LopNode:

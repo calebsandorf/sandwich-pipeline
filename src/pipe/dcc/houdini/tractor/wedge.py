@@ -6,10 +6,11 @@ flipbooks some of its frames, or finishes its flipbook once every frame is drawn
     hython -m pipe.dcc.houdini.tractor.wedge <wedge.json> <wedge> finish
 
 Sim and flipbook set the wedge's values and point every cache the wedge writes
-into the wedge's folder. A sim writes one of them, reading those written before
-it, and the flipbook reads them all, drawing the scene as the sims saw it. It
-looks through the shot camera at the stage of the hip's publish node, or at
-only the wedged cache's output under that camera.
+into its own folder in the wedge's. A sim writes one of them over the frames the
+record gives it, reading those written before it, and the flipbook reads them
+all, drawing the scene as the sims saw it. It looks through the shot camera at
+the stage of the hip's publish node, or at only the wedged cache's output under
+that camera.
 """
 
 from __future__ import annotations
@@ -23,8 +24,8 @@ import hou
 
 from pipe.core.hud import HudContent
 from pipe.core.playblast.encoding import burn_hud_frames
-from pipe.dcc.houdini.tractor import cache, caches, wedges
-from pipe.dcc.houdini.tractor.caches import LOAD_FROM_DISK, SIMULATION
+from pipe.dcc.houdini.tractor import cache, wedges
+from pipe.dcc.houdini.tractor.caches import LOAD_FROM_DISK
 from pipe.dcc.houdini.tractor.commands import (
     WEDGE_DRAW_FAILED,
     WEDGE_FINISH,
@@ -51,12 +52,12 @@ def main(argv: list[str] | None = None) -> int:
         print(f"The snapshot has no parm {', '.join(missing)}.", file=sys.stderr)
         return 1
     written: list[hou.Node] = []
-    for path in run.caches:
+    for index, path in enumerate((c.path for c in run.caches), start=1):
         node = hou.node(path)
         if node is None:
             print(f"The snapshot has no node {path}.", file=sys.stderr)
             return 1
-        wedges.redirect(node, folder)
+        wedges.redirect(node, folder, index)
         written.append(node)
     if args.step == WEDGE_SIM:
         return sim(run, written, args.args[0])
@@ -83,24 +84,16 @@ def _parse(argv: list[str] | None) -> argparse.Namespace:
 
 
 def sim(run: wedges.Run, written: list[hou.Node], path: str) -> int:
-    """Write one of the wedge's caches, reading those written before it from
-    the wedge's folder. The exit code."""
-    if path not in run.caches:
+    """Write one of the wedge's caches over the frames the record gives it,
+    reading those written before it from the wedge's folder. The exit code."""
+    paths = [c.path for c in run.caches]
+    if path not in paths:
         print(f"The run doesn't write {path}.", file=sys.stderr)
         return 1
-    index = run.caches.index(path)
+    index = paths.index(path)
     for node in written[:index]:
         node.setParms({LOAD_FROM_DISK: 1})
-    if path == run.node:
-        return cache.write(path, run.start, run.end)
-    # The other caches keep their own frames, as Save to Disk would write them,
-    # but none outside the run's, which no flipbook draws. A sim still starts
-    # where it always does, since each frame cooks from the last.
-    chunks = caches.chunks(written[index])
-    start, end = chunks[0][0], min(chunks[-1][1], run.end)
-    if not written[index].evalParm(SIMULATION):
-        start = max(start, run.start)
-    return cache.write(path, start, end)
+    return cache.write(path, run.caches[index].start, run.caches[index].end)
 
 
 def flipbook(

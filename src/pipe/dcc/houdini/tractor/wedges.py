@@ -5,7 +5,9 @@ folder.
     <hip>/geo/.tractor/<node>/v003/
     ├── scene.hipnc         the snapshot every task loads
     ├── wedge.json          the record: what was wedged, over which frames
-    ├── w01/                the caches of the first wedge, each under its own name
+    ├── w01/                the first wedge
+    │   ├── 01_upstream/    each cache it writes, numbered in cook order, since
+    │   ├── 02_sim/         two caches may share a file name
     │   └── flipbook/       its HUD-burned frames, there once they are all written
     └── w02/
 """
@@ -47,6 +49,15 @@ class Wedge:
 
 
 @dataclass(frozen=True)
+class Cache:
+    path: str
+    # A sim cooks each frame from the last, so every cache writes from its own
+    # first frame, and none past the run's last, which no flipbook draws.
+    start: float
+    end: float
+
+
+@dataclass(frozen=True)
 class Run:
     title: str
     snapshot: Path
@@ -60,7 +71,7 @@ class Run:
     draw: str
     # What each wedge writes, in cook order: the node, and the caches loading
     # from disk that a wedged parm or the publish node reaches it through.
-    caches: list[str]
+    caches: list[Cache]
     wedges: list[Wedge]
 
     @property
@@ -91,7 +102,7 @@ def write_record(run: Run) -> Path:
         "fps": run.fps,
         "publish": run.publish,
         "draw": run.draw,
-        "caches": run.caches,
+        "caches": [{"path": c.path, "frames": [c.start, c.end]} for c in run.caches],
         "wedges": [{"name": w.name, "values": w.values} for w in run.wedges],
     }
     path.write_text(json.dumps(data, indent=2))
@@ -111,7 +122,7 @@ def read_record(path: Path) -> Run:
         fps=data["fps"],
         publish=data["publish"],
         draw=data["draw"],
-        caches=data["caches"],
+        caches=[Cache(c["path"], *c["frames"]) for c in data["caches"]],
         wedges=[Wedge(w["name"], w["values"]) for w in data["wedges"]],
     )
 
@@ -191,8 +202,10 @@ def set_values(wedge: Wedge) -> list[str]:
     return missing
 
 
-def redirect(node: hou.Node, folder: Path) -> None:
-    """Point the File Cache's output into `folder`, keeping its own file names."""
+def redirect(node: hou.Node, folder: Path, index: int) -> None:
+    """Point the File Cache's output into its numbered folder in the wedge's
+    `folder`, keeping its own file names."""
+    folder = folder / f"{index:02}_{node.name()}"
     if node.evalParm("filemethod") == CONSTRUCTED:
         node.setParms({"basedir": str(folder)})
         return

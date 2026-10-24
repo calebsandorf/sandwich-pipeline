@@ -41,7 +41,9 @@ PRIVATE_DISPLAY = [
     'Xvnc -displayfd 3 -auth "$x/auth" -rfbport -1 -rfbunixpath "$x/vnc"'
     ' -nolisten tcp 3>"$x/display" &',
     "xvnc=$!",
-    'trap \'kill "$xvnc"; rm -rf "$x"\' EXIT',
+    # Xvnc may be gone already, and a failed kill under -e would replace the
+    # task's exit code and skip the rm.
+    'trap \'kill "$xvnc" 2>/dev/null || true; rm -rf "$x"\' EXIT',
     # Fails the task if Xvnc exits before it is ready.
     'until [ -s "$x/display" ]; do kill -0 "$xvnc"; sleep 0.2; done',
     'export DISPLAY=":$(cat "$x/display")" XAUTHORITY="$x/auth"',
