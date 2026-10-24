@@ -69,8 +69,8 @@ class Run:
     # The hip's publish node, whose stage holds the shot camera.
     publish: str
     draw: str
-    # What each wedge writes, in cook order: the node, and the caches loading
-    # from disk that a wedged parm or the publish node reaches it through.
+    # What each wedge writes, in cook order: the caches loading from disk
+    # between a wedged parm and what is drawn, and the node if a parm reaches it.
     caches: list[Cache]
     wedges: list[Wedge]
 

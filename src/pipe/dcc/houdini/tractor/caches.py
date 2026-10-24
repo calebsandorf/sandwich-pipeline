@@ -3,8 +3,6 @@ the caches upstream of one, and the frames each of its tasks writes."""
 
 from __future__ import annotations
 
-from collections.abc import Callable
-
 import hou
 
 from pipe.dcc.houdini.tractor.cache import ROP, STEP_TOLERANCE
@@ -102,13 +100,8 @@ def between(sources: list[hou.Node], target: hou.Node) -> list[hou.Node]:
     return found
 
 
-def reached(
-    node: hou.Node, stop: Callable[[hou.Node], bool] = lambda _: False
-) -> list[hou.Node]:
-    """Every node `node` cooks from, each after the nodes it cooks from.
-
-    A node for which `stop` is true is reached, but not walked past.
-    """
+def reached(node: hou.Node) -> list[hou.Node]:
+    """Every node `node` cooks from, each after the nodes it cooks from."""
     found: list[hou.Node] = []
     seen = {(node.sessionId(), True)}
     stack = [(node, iter(_feeds(node, True, node)))]
@@ -122,8 +115,7 @@ def reached(
             continue
         if (nxt[0].sessionId(), nxt[1]) not in seen:
             seen.add((nxt[0].sessionId(), nxt[1]))
-            walked = [] if stop(nxt[0]) else _feeds(nxt[0], nxt[1], node)
-            stack.append((nxt[0], iter(walked)))
+            stack.append((nxt[0], iter(_feeds(nxt[0], nxt[1], node))))
     return found
 
 

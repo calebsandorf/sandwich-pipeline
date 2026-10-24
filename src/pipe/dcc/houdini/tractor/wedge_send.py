@@ -62,8 +62,10 @@ def send(node: hou.Node) -> None:
         node,
         title(node, " wedges"),
         (start, end),
-        caches.between([node], publish),
         _last_rows.get(path, []),
+        lambda parms, draw: _written(
+            _node(path), publish, [p.node() for p in parms], draw
+        ),
         lambda rows: _wedges(_node(path), rows),
         lambda choice: _submit(path, choice),
     )
@@ -76,7 +78,8 @@ def _submit(path: str, choice: wedge_dialog.WedgeChoice) -> None:
         node = _node(path)
         check(node)
         publish = _publish()
-        written = _written(node, publish, choice)
+        parms = [_parm(path).node() for path in choice.wedges[0].values]
+        written = _written(node, publish, parms, choice.draw)
         built, run = _build(node, publish, choice, written)
     except SendRefused as refusal:
         refuse(str(refusal))
@@ -90,8 +93,10 @@ def _submit(path: str, choice: wedge_dialog.WedgeChoice) -> None:
     if job_id is None:
         note(node, COMMENT, f"{COMMENT} {run.folder.name}: not confirmed by Tractor")
         return
-    what = f"sims {len(run.wedges)} wedges of {node.name()}"
-    if len(written) > 1:
+    what = f"flipbooks {len(run.wedges)} wedges of {node.name()}"
+    if written == [node]:
+        what = f"sims {len(run.wedges)} wedges of {node.name()}"
+    elif written:
         names = ", ".join(cache.name() for cache in written)
         what = f"writes {names} for each of {len(run.wedges)} wedges of {node.name()}"
     hou.ui.displayMessage(
@@ -111,18 +116,22 @@ def _node(path: str) -> hou.Node:
 
 
 def _written(
-    node: hou.Node, publish: hou.LopNode, choice: wedge_dialog.WedgeChoice
+    node: hou.Node, publish: hou.LopNode, parms: list[hou.Node], draw: str
 ) -> list[hou.Node]:
-    """The caches each wedge writes, in cook order: those a wedged parm reaches
-    the node through, the node, and those checked under Cache after."""
-    parms = [_parm(path).node() for path in choice.wedges[0].values]
-    before = caches.between(parms, node)
-    if choice.draw != wedges.SHOT:
-        return [*before, node]
-    between = caches.between([node], publish)
-    after = [cache for cache in between if cache.path() in choice.after]
-    _check_published(node, publish, [cache for cache in between if cache not in after])
-    return [*before, node, *after]
+    """What each wedge writes, in cook order: every cache loading from disk
+    between a wedged parm and what the flipbook draws, whose files would hide
+    the change, and the node itself once a wedged parm reaches it."""
+    if not parms:
+        return []
+    drawn = publish if draw == wedges.SHOT else node
+    written = caches.between(parms, drawn)
+    reached = caches.reached(node)
+    if node in written or not any(parm in reached for parm in parms):
+        return written
+    # Before the first cache that reads it, which keeps the cook order.
+    readers = [i for i, cache in enumerate(written) if node in caches.reached(cache)]
+    written.insert(readers[0] if readers else len(written), node)
+    return written
 
 
 def _build(
@@ -185,30 +194,6 @@ def _publish() -> hou.LopNode:
             "the wedges through. Load the shot camera, then Send again."
         )
     return publish
-
-
-def _check_published(
-    node: hou.Node, publish: hou.LopNode, kept: list[hou.Node]
-) -> None:
-    """Refuse a Shot flipbook of a cache the publish node doesn't reach, or
-    reaches only through the `kept` caches, which keep their files, since
-    every wedge's flipbook would then look the same."""
-    if node in caches.reached(publish, stop=kept.__contains__):
-        return
-    # Outermost first: the walk lists a node after what it cooks from, and
-    # writing a cache behind another kept one changes nothing.
-    for cache in reversed(kept):
-        if node in caches.reached(cache):
-            raise SendRefused(
-                f"{publish.path()} reaches {node.name()} only through {cache.path()}, "
-                "which keeps its files, so a Shot flipbook would show no change. "
-                "Check it under Cache after, or draw Cache only."
-            )
-    raise SendRefused(
-        f"{publish.path()} doesn't use {node.name()}, so a Shot flipbook would "
-        f"show no change. Draw Cache only, or wire {node.name()} into what the "
-        "hip publishes."
-    )
 
 
 def _wedges(node: hou.Node, rows: list[wedge_dialog.Row]) -> list[wedges.Wedge]:
