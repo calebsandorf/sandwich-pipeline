@@ -37,6 +37,8 @@ BUTTONS = (
 )
 # Save to Disk's row ends with Cancel Cook, so the buttons start the row below.
 BUTTON_AFTER = "dirtyall"
+# Any name, so folders compare by everything but their name.
+FOLDER = "folder"
 
 LOAD_FROM_DISK = "loadfromdisk"
 SIMULATION = "cachesim"
@@ -84,12 +86,29 @@ def strip_buttons(node: hou.Node) -> None:
             # The stubs, made for Houdini 19.5, leave this method out.
             node.removeSpareParmTuple(parm)  # ty: ignore[unresolved-attribute]
     # Removing the buttons leaves the layout's folders behind as spares, which
-    # warn on the next load. A node with an artist's own spare parm needs them.
-    if all(
-        isinstance(p.parmTemplate(), hou.FolderSetParmTemplate)
-        for p in node.spareParms()
+    # warn on the next load. An artist's own edit to the layout, even one with
+    # no spare parm such as a hidden parm, is saved by those spares.
+    if _layout(node.parmTemplateGroup().entries()) == _layout(
+        node.type().parmTemplateGroup().entries()
     ):
         node.removeSpareParms()
+
+
+def _layout(templates: tuple[hou.ParmTemplate, ...]) -> list[hou.ParmTemplate]:
+    """The templates with folder names left out, since Houdini renames the
+    folders each time a layout is set."""
+    found = []
+    for template in templates:
+        if isinstance(template, hou.FolderParmTemplate):
+            folder = template.clone()
+            folder.setName(FOLDER)
+            # The stubs type clone() as returning a plain ParmTemplate.
+            folder.setParmTemplates(())  # ty: ignore[unresolved-attribute]
+            found.append(folder)
+            found.extend(_layout(template.parmTemplates()))
+        else:
+            found.append(template)
+    return found
 
 
 def on_save(event: hou.hipFileEventType) -> None:
