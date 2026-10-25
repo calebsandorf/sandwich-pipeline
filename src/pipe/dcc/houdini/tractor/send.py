@@ -41,18 +41,16 @@ ENCODE = "tractor_encode_video"
 
 # What the render Send's tasks need to run husk, denoise_batch and ffmpeg.
 # Tractor's setenv envkey cuts a value at its first space, and none holds one.
+# husk loads the renderer packages, MoonRay's among them, from
+# HOUDINI_PACKAGE_DIR, so each blade gets its own build's paths.
 ENV_VARS = (
-    "ARRAS_SESSION_PATH",
+    "HOUDINI_PACKAGE_DIR",
     "HOUDINI_PATH",
-    "MOONRAY_CLASS_PATH",
-    "MOONRAY_ROOT",
     "OCIO",
     "PATH",
     "PIXAR_LICENSE_FILE",
     "PXR_AR_DEFAULT_SEARCH_PATH",
     "PXR_PLUGINPATH_NAME",
-    "RDL2_DSO_PATH",
-    "REZ_MOONRAY_ROOT",
     "RFHTREE",
     "RMAN_COLOR_CONFIG_DIR",
     "RMANTREE",
