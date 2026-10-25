@@ -54,16 +54,34 @@ def send(node: hou.Node) -> None:
         "Its caches still cook live. Turn on Load from Disk once it has "
         "written them.",
     )
-    if job_id is not None:
-        _load_from_disk(sent)
+    if job_id is None:
+        for cache in sent:
+            note(cache, COMMENT, _job_line(job_id))
+        return
+    paths = "\n".join(cache.path() for cache in sent)
+    try:
+        # One Ctrl+Z puts the caches back as they were before Send.
+        with hou.undos.group(f"Save {node.name()} to Disk on Tractor"):
+            _load_from_disk(sent)
+            for cache in sent:
+                note(cache, COMMENT, _job_line(job_id))
+    except Exception:
+        # The job is queued whatever happens here, so its id must reach the
+        # artist.
+        log.exception("Changing the caches after job %s was sent failed", job_id)
         hou.ui.displayMessage(
-            f"Job {job_id} caches:\n"
-            + "\n".join(cache.path() for cache in sent)
-            + "\n\nCheck its progress in Tractor.",
+            f"Job {job_id} was sent to Tractor and caches:\n{paths}\n\n"
+            "Send could not turn on their Load from Disk. Turn it on by hand "
+            "once the job has written them.",
             title="Job sent to Tractor",
+            severity=hou.severityType.Warning,
+            details=traceback.format_exc(),
         )
-    for cache in sent:
-        note(cache, COMMENT, _job_line(job_id))
+        return
+    hou.ui.displayMessage(
+        f"Job {job_id} caches:\n{paths}\n\nCheck its progress in Tractor.",
+        title="Job sent to Tractor",
+    )
 
 
 def spool(built: author.Job, title: str, unconfirmed: str = "") -> int | None:
