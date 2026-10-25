@@ -137,12 +137,18 @@ def parse(parm: hou.Parm, text: str) -> list[Value]:
 
 
 def _value(parm: hou.Parm, token: str) -> Value:
-    kind = parm.parmTemplate().type()
+    template = parm.parmTemplate()
+    kind = template.type()
     menu = _menu(parm)
     try:
         if token in menu:
-            # A string parm holds the token, and the others the item's index.
-            return token if kind == hou.parmTemplateType.String else menu.index(token)
+            if kind != hou.parmTemplateType.Int:
+                # Kept as the token, which the burn-in shows and set() takes.
+                return token
+            # An int parm holds the item's index, unless its menu's tokens are
+            # the values. The base ParmTemplate doesn't declare this method.
+            use_token = template.menuUseToken()  # ty: ignore[unresolved-attribute]
+            return int(token) if use_token else menu.index(token)
         if kind == hou.parmTemplateType.Float:
             return float(token)
         if kind in (hou.parmTemplateType.Int, hou.parmTemplateType.Toggle):

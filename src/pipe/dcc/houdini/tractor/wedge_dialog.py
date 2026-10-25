@@ -9,7 +9,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 import hou
-from Qt import QtGui, QtWidgets
+from Qt import QtCore, QtGui, QtWidgets
 
 from pipe.core.ui.dialogs import DialogButtons
 from pipe.dcc.houdini.tractor import SendRefused, wedges
@@ -19,6 +19,8 @@ from pipe.dcc.houdini.tractor.job import BLADES, PRIORITY
 Row = tuple[str, str]
 # The caches each wedge writes, given the wedged parms and the Draw.
 Rebuilds = Callable[[list[hou.Parm], str], list[hou.Node]]
+# The job's default title, given the node.
+Titled = Callable[[hou.Node], str]
 
 # One wedge is just a farm sim.
 MINIMUM = 2
@@ -31,7 +33,9 @@ DRAW_HELP = (
 REBUILDS_HELP = (
     "The caches each wedge writes into its own folder: every cache loading\n"
     "from disk between a wedged parm and what the flipbook draws, and this\n"
-    "cache when a wedged parm changes it."
+    "cache when a wedged parm changes it.\n"
+    "They are found from the references Houdini reports, which leave out\n"
+    "parms read by VEX code and nodes named by a path built from an expression."
 )
 _WIDTH = 520
 # A spin box allows 0 to 99 unless told otherwise; frames can be negative.
@@ -61,7 +65,7 @@ _dialogs: dict[int, _WedgeDialog] = {}
 def show(
     parent: QtWidgets.QWidget | None,
     node: hou.Node,
-    title: str,
+    titled: Titled,
     frames: tuple[int, int],
     rows: list[Row],
     rebuilds: Rebuilds,
@@ -78,7 +82,7 @@ def show(
         return
     if old is not None:
         old.deleteLater()
-    dialog = _WedgeDialog(parent, node, title, frames, rows, rebuilds, send)
+    dialog = _WedgeDialog(parent, node, titled, frames, rows, rebuilds, send)
     _dialogs[key] = dialog
     dialog.show()
 
@@ -139,7 +143,7 @@ class _WedgeDialog(QtWidgets.QDialog, DialogButtons):
         self,
         parent: QtWidgets.QWidget | None,
         node: hou.Node,
-        title: str,
+        titled: Titled,
         frames: tuple[int, int],
         rows: list[Row],
         rebuilds: Rebuilds,
@@ -147,19 +151,18 @@ class _WedgeDialog(QtWidgets.QDialog, DialogButtons):
     ) -> None:
         super().__init__(parent)
         self._init_buttons(True, "Send", "Cancel")
-        self.setWindowTitle(f"Wedge {node.name()} on Tractor")
         self.setMinimumWidth(_WIDTH)
-        self._default_title = title
+        # The stubs say sessionId() returns None. It returns the node's id.
+        self._key: int = node.sessionId()  # ty: ignore[invalid-assignment]
+        self._titled = titled
+        self._default_title = ""
         self._rebuilds = rebuilds
-        # The parms and Draw last shown, since walking the scene can take seconds.
-        self._shown: tuple[list[hou.Parm], str] | None = None
         self._send = send
         self._fields: list[tuple[_ParmField, QtWidgets.QLineEdit]] = []
         # Every widget of each row, in the order of `_fields`.
         self._rows: list[list[QtWidgets.QWidget]] = []
 
         self._title = QtWidgets.QLineEdit()
-        self._title.setPlaceholderText(title)
 
         low, high, default = PRIORITY
         self._priority = QtWidgets.QSpinBox()
@@ -214,7 +217,7 @@ class _WedgeDialog(QtWidgets.QDialog, DialogButtons):
         layout.addLayout(form)
         layout.addWidget(self.buttons)
         self._update_count()
-        self._update_rebuilds()
+        self._refresh()
 
     def _add_row(self, path: str, values: str) -> None:
         parm = _ParmField(path)
@@ -259,19 +262,37 @@ class _WedgeDialog(QtWidgets.QDialog, DialogButtons):
             if parm.text().strip() or values.text().strip()
         ]
 
+    def event(self, event: QtCore.QEvent) -> bool:
+        # The artist comes back from editing the graph, or renaming the node.
+        if event.type() == QtCore.QEvent.WindowActivate:
+            self._refresh()
+        return super().event(event)
+
+    def _refresh(self) -> None:
+        node = hou.nodeBySessionId(self._key)
+        # A deleted node keeps its name here, and Rebuilds says it is gone.
+        if node is not None:
+            self.setWindowTitle(f"Wedge {node.name()} on Tractor")
+            self._default_title = self._titled(node)
+            self._title.setPlaceholderText(self._default_title)
+        self._update_rebuilds()
+
     def _update_rebuilds(self) -> None:
         # A path still being typed names no parm yet.
         parms = [hou.parm(path) for path, _ in self.rows()]
-        shown = ([p for p in parms if p is not None], DRAWS[self._draw.currentText()])
-        if shown == self._shown:
-            return
-        self._shown = shown
+        draw = DRAWS[self._draw.currentText()]
         try:
-            rebuilt = self._rebuilds(*shown)
+            rebuilt = self._rebuilds([p for p in parms if p is not None], draw)
+            text = ", ".join(c.name() for c in rebuilt) or "Nothing"
         except SendRefused as refusal:
-            self._rebuilt.setText(str(refusal))
-            return
-        self._rebuilt.setText(", ".join(c.name() for c in rebuilt) or "Nothing")
+            text = str(refusal)
+        self._rebuilt.setText(text)
+        # A shown dialog doesn't grow for a label that wraps onto more lines.
+        # Before it is shown, a resize would stop it sizing itself to fit.
+        label = self._rebuilt
+        grow = label.heightForWidth(label.width()) - label.height()
+        if self.isVisible() and grow > 0:
+            self.resize(self.width(), self.height() + grow)
 
     def _update_count(self) -> None:
         total = count(self.rows())

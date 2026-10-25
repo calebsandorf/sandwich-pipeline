@@ -60,12 +60,10 @@ def send(node: hou.Node) -> None:
     wedge_dialog.show(
         runtime.get_main_qt_window(),
         node,
-        title(node, " wedges"),
+        lambda current: title(current, " wedges"),
         (start, end),
         _last_rows.get(key, []),
-        lambda parms, draw: _written(
-            _node(key), publish, [p.node() for p in parms], draw
-        ),
+        lambda parms, draw: _written(_node(key), publish, parms, draw),
         lambda choice: _submit(key, choice),
     )
 
@@ -78,7 +76,7 @@ def _submit(key: int, choice: wedge_dialog.WedgeChoice) -> None:
     check(node)
     publish = _publish()
     found = _wedges(choice.rows)
-    parms = [_parm(path).node() for path in found[0].values]
+    parms = [_parm(path) for path in found[0].values]
     written = _written(node, publish, parms, choice.draw)
     try:
         built, run = _build(node, publish, choice, found, written)
@@ -121,17 +119,39 @@ def _node(key: int) -> hou.Node:
 
 
 def _written(
-    node: hou.Node, publish: hou.LopNode, parms: list[hou.Node], draw: str
+    node: hou.Node, publish: hou.LopNode, parms: list[hou.Parm], draw: str
 ) -> list[hou.Node]:
     """What each wedge writes, in cook order: every cache loading from disk
     between a wedged parm and what the flipbook draws, whose files would hide
-    the change, and the node itself once a wedged parm reaches it."""
+    the change, and the node itself once a wedged parm reaches it. Raises
+    SendRefused when no flipbook would show a wedge's change."""
     if not parms:
         return []
-    drawn = publish if draw == wedges.SHOT else node
-    written = caches.between(parms, drawn)
+    owners = [parm.node() for parm in parms]
     reached = caches.reached(node)
-    if node in written or not any(parm in reached for parm in parms):
+    drawn = publish if draw == wedges.SHOT else node
+    seen = reached if drawn == node else caches.reached(drawn)
+    if (
+        draw == wedges.SHOT
+        and node not in seen
+        and any(owner in reached for owner in owners)
+    ):
+        raise SendRefused(
+            f"{publish.path()} doesn't read {node.name()}, so the shot's "
+            f"flipbooks wouldn't show its sims. Set Draw to Cache only, or "
+            f"connect {node.name()} to the shot, then Send again."
+        )
+    if not any(owner in seen for owner in owners):
+        names = ", ".join(wedges.label(parm.path()) for parm in parms)
+        raise SendRefused(
+            f"Nothing the flipbook draws reads {names}, so every wedge would "
+            "look the same.\n\nHoudini doesn't report a parm read by VEX, such "
+            "as ch() in a wrangle. Give the wrangle a spare parm whose "
+            f'expression is ch("{parms[0].path()}"), read that spare parm in '
+            "the VEX, then Send again."
+        )
+    written = caches.between(owners, drawn)
+    if node in written or not any(owner in reached for owner in owners):
         return written
     # Before the first cache that reads it, which keeps the cook order.
     readers = [i for i, cache in enumerate(written) if node in caches.reached(cache)]
