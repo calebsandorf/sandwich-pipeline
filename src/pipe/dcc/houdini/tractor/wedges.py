@@ -23,6 +23,10 @@ from pathlib import Path, PurePosixPath
 import hou
 
 RECORD = "wedge.json"
+# Bumped when the record's keys change, so a blade or review running other code
+# refuses a record it would misread. Tasks of a job sent before a change, and
+# runs on disk, keep the record they were sent with.
+SCHEMA = 1
 FLIPBOOK = "flipbook"
 # The frames' file name before the frame number, as the viewer reads them.
 FRAMES = "flipbook"
@@ -94,6 +98,7 @@ def chunks(run: Run) -> list[tuple[int, int]]:
 def write_record(run: Run) -> Path:
     path = run.folder / RECORD
     data = {
+        "schema": SCHEMA,
         "title": run.title,
         "snapshot": str(run.snapshot),
         "hip": str(run.hip),
@@ -110,7 +115,10 @@ def write_record(run: Run) -> Path:
 
 
 def read_record(path: Path) -> Run:
+    """Raises ValueError, worded for the artist, for a record it can't read."""
     data = json.loads(path.read_text())
+    if data.get("schema") != SCHEMA:
+        raise ValueError("it was sent by another version of Wedge on Tractor")
     start, end = data["frames"]
     return Run(
         title=data["title"],

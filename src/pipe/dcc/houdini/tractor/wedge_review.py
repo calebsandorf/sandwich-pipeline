@@ -18,14 +18,21 @@ TITLE = "Review Wedges"
 
 
 def review(node: hou.Node) -> None:
-    runs = _runs(node)
-    if not runs:
+    runs, unread = _runs(node)
+    if unread:
+        hou.ui.displayMessage(
+            "Review Wedges leaves out the runs it can't read:\n" + "\n".join(unread),
+            title=TITLE,
+            severity=hou.severityType.Warning,
+        )
+    if not runs and not unread:
         hou.ui.displayMessage(
             f"No wedge run in {snapshot.folder(node)} was sent from {node.path()}. A node "
             "renamed or moved since leaves its runs behind. Wedge on Tractor "
             "sends one.",
             title=TITLE,
         )
+    if not runs:
         return
     clips: list[PreviewClip] = []
     # The run and wedge of each clip, by its frames folder.
@@ -70,12 +77,22 @@ def review(node: hou.Node) -> None:
     open_viewer(clips, runtime.get_main_qt_window(), actions=actions)
 
 
-def _runs(node: hou.Node) -> list[wedges.Run]:
-    """The node's wedge runs, newest first."""
+def _runs(node: hou.Node) -> tuple[list[wedges.Run], list[str]]:
+    """The node's wedge runs, newest first, and why each record that can't be
+    read wasn't."""
     records = sorted(snapshot.folder(node).glob(f"v*/{wedges.RECORD}"), reverse=True)
-    # Two nodes of one name share a Send folder.
-    runs = [wedges.read_record(record) for record in records]
-    return [run for run in runs if run.node == node.path()]
+    runs = []
+    unread = []
+    for record in records:
+        try:
+            run = wedges.read_record(record)
+        except ValueError as error:
+            unread.append(f"{record.parent}: {error}")
+            continue
+        # Two nodes of one name share a Send folder.
+        if run.node == node.path():
+            runs.append(run)
+    return runs, unread
 
 
 def _apply(run: wedges.Run, wedge: wedges.Wedge) -> bool:

@@ -115,7 +115,7 @@ def flipbook(
     rop.setParms({"picture": str(raw / f"{RAW}.$F4.png")})
     try:
         rop.render(frame_range=(start, end), output_progress=True)
-    except RuntimeError as error:
+    except hou.OperationFailed as error:
         print(f"The flipbook couldn't draw: {error}", file=sys.stderr)
         return WEDGE_DRAW_FAILED
 
@@ -138,18 +138,39 @@ def flipbook(
 
 
 def finish(run: wedges.Run, folder: Path) -> int:
-    """Rename the drawn frames into place once every one is there."""
+    """Rename the drawn frames into place once every one is there.
+
+    A retried Draw writes into scratch again, after the flipbook is in place,
+    so finishing again keeps the flipbook's frames that Draw didn't redraw.
+    """
     scratch = folder / SCRATCH
-    frames = range(run.start, run.end + 1)
-    for frame in frames:
-        if not (scratch / f"{wedges.FRAMES}.{frame:04}.png").is_file():
-            print(f"The flipbook has no frame {frame}.", file=sys.stderr)
-            return 1
     final = folder / wedges.FLIPBOOK
+    frames = range(run.start, run.end + 1)
+    # Finished already, and left alone, since review may be playing it.
+    if not scratch.exists() and _missing(final, frames) is None:
+        print(f"{final} already has all {len(frames)} frames.")
+        return 0
+    if final.is_dir():
+        scratch.mkdir(exist_ok=True)
+        for file in final.iterdir():
+            if not (scratch / file.name).exists():
+                file.rename(scratch / file.name)
+    missing = _missing(scratch, frames)
+    if missing is not None:
+        print(f"The flipbook has no frame {missing}.", file=sys.stderr)
+        return 1
     shutil.rmtree(final, ignore_errors=True)
     scratch.rename(final)
     print(f"Flipbooked {len(frames)} frames into {final}.")
     return 0
+
+
+def _missing(folder: Path, frames: range) -> int | None:
+    """The first of `frames` the folder has no burned frame of."""
+    for frame in frames:
+        if not (folder / f"{wedges.FRAMES}.{frame:04}.png").is_file():
+            return frame
+    return None
 
 
 def _flipbook_rop(run: wedges.Run) -> hou.RopNode | None:
