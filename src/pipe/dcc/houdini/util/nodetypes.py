@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+FILE_CACHE = "filecache::2.0"
 IMPORT_CAMERA = "skd::main::import_camera::1.0"
 LOAD_LAYERS = "skd::main::load_layers::2.0"
 LOAD_LAYERS_1 = "skd::main::load_layers::1.0"

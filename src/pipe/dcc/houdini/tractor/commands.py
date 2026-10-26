@@ -23,6 +23,32 @@ LICENSE_TRAP = rf'trap "test \$? -eq 3 && hserver -S {LICENSE_SERVER} && exit 3"
 # This catches jobs that segfault then keep running instead of failing
 HUSK_SEGFAULT = "Fatal error: Segmentation fault"
 SEGFAULT_EXIT = 139
+# Run by hython on the blade: writes one File Cache from a Send's snapshot.
+CACHE_MODULE = "pipe.dcc.houdini.tractor.cache_task"
+# Run by hython on the blade: sims, flipbooks or finishes one wedge of a Wedge Send.
+WEDGE_MODULE = "pipe.dcc.houdini.tractor.wedge_task"
+WEDGE_SIM = "sim"
+WEDGE_FLIPBOOK = "flipbook"
+WEDGE_FINISH = "finish"
+# A flipbook's exit code when it couldn't draw, as when other tasks on the blade
+# have filled the GPU's memory. Tractor retries it.
+WEDGE_DRAW_FAILED = 75
+PRIVATE_DISPLAY = [
+    "x=$(mktemp -d)",
+    "cookie=$(mcookie)",
+    'xauth -q -f "$x/auth" add :0 . "$cookie"',
+    # Viewers could connect only through a socket in the private folder.
+    'Xvnc -displayfd 3 -auth "$x/auth" -rfbport -1 -rfbunixpath "$x/vnc"'
+    ' -nolisten tcp 3>"$x/display" &',
+    "xvnc=$!",
+    # Xvnc may be gone already, and a failed kill under -e would replace the
+    # task's exit code and skip the rm.
+    'trap \'kill "$xvnc" 2>/dev/null || true; rm -rf "$x"\' EXIT',
+    # Fails the task if Xvnc exits before it is ready.
+    'until [ -s "$x/display" ]; do kill -0 "$xvnc"; sleep 0.2; done',
+    'export DISPLAY=":$(cat "$x/display")" XAUTHORITY="$x/auth"',
+    'xauth -q add "$DISPLAY" . "$cookie"',
+]
 # RenderMan's denoiser reads this many frames either side of each frame.
 DENOISE_RADIUS = 3
 
@@ -52,6 +78,29 @@ class Encode:
     frame_rate: float
     # Cleanup deletes the frames once the video is written.
     remove_frames: bool
+
+
+@dataclass(frozen=True)
+class Cache:
+    snapshot: Path
+    # The artist's hip, whose name the snapshot takes back once it is loaded.
+    hip: Path
+    node: str
+    # The start and end frame of each task that writes the node.
+    chunks: list[tuple[float, float]]
+    # The session's variables, which hython needs to load the hip as it did.
+    env: dict[str, str]
+
+
+@dataclass(frozen=True)
+class Wedges:
+    # The run's wedge.json, which holds everything else a task needs.
+    record: Path
+    env: dict[str, str]
+    # The start and end frame of each flipbook task.
+    chunks: list[tuple[int, int]]
+    # The paths of the caches each wedge writes, in cook order.
+    caches: list[str]
 
 
 @dataclass(frozen=True)
@@ -103,6 +152,37 @@ def render(layer: Layer, frame: int) -> str:
             "done",
         ]
     )
+
+
+def cache(spec: Cache, start: float, end: float) -> str:
+    """The task fails with hython's exit code, which is 1 when a frame is unreadable.
+
+    The script exports the variables itself: Tractor's envkey cuts a value
+    at its first space, and OCIO_ACTIVE_DISPLAYS holds spaces.
+    """
+    hython = [
+        "hython",
+        "-m",
+        CACHE_MODULE,
+        str(spec.snapshot),
+        str(spec.hip),
+        spec.node,
+        f"{start:g}",
+        f"{end:g}",
+    ]
+    return "\n".join([*_exports(spec.env), shlex.join(hython)])
+
+
+def wedge(spec: Wedges, name: str, step: str, args: tuple[str, ...] = ()) -> str:
+    """One step of one wedge, with the cache a sim writes or a flipbook's start
+    and end frame. Exported like `cache`, and failing with hython's exit code."""
+    hython = ["hython", "-m", WEDGE_MODULE, str(spec.record), name, step, *args]
+    display = PRIVATE_DISPLAY if step == WEDGE_FLIPBOOK else []
+    return "\n".join([*_exports(spec.env), *display, shlex.join(hython)])
+
+
+def _exports(env: dict[str, str]) -> list[str]:
+    return [f"export {name}={shlex.quote(value)}" for name, value in env.items()]
 
 
 def denoise_window(frame: int, frames: list[int]) -> list[int]:

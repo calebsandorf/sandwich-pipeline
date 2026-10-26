@@ -79,7 +79,7 @@ def _publish(window: QtWidgets.QWidget | None) -> _Published | None:
     conn = ShotGrid.connect(DB_Config)
     target = hip_target(conn, hip_path)
     frame_range = _frame_range(target.entity)
-    node = _publish_node()
+    node = publish_node()
 
     choice = prompt_publish(window, target)
     if choice is None:
@@ -108,7 +108,8 @@ def _publish(window: QtWidgets.QWidget | None) -> _Published | None:
     return _Published(lines, description if choice.playblast else None)
 
 
-def _publish_node() -> hou.LopNode:
+def publish_node() -> hou.LopNode:
+    """The one publish node of the hip, which marks what it publishes."""
     node_type = cast(
         hou.NodeType, hou.nodeType(hou.lopNodeTypeCategory(), nodetypes.PUBLISH)
     )
@@ -116,13 +117,13 @@ def _publish_node() -> hou.LopNode:
     if not nodes:
         raise Refused(
             f"This hip has no {node_type.description()} node. Add one below the "
-            "last node of the work to publish, then publish again."
+            "last node of the work to publish, then try again."
         )
     if len(nodes) > 1:
         paths = "\n".join(f"  {node.path()}" for node in nodes)
         raise Refused(
             f"This hip has {len(nodes)} {node_type.description()} nodes, and a hip "
-            f"publishes one layer:\n{paths}\nDelete all but one, then publish again."
+            f"publishes one layer:\n{paths}\nDelete all but one, then try again."
         )
     return cast(hou.LopNode, nodes[0])
 

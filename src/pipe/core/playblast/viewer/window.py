@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
+
+import attrs
 
 from Qt.QtCore import (
     QElapsedTimer,
@@ -61,6 +63,16 @@ _PLAY_ICON = 26
 _UNCONFIRMED = (PanelStatus.PENDING, PanelStatus.FAILED)
 
 
+@attrs.frozen
+class ClipAction:
+    """A button that acts on the clip on screen. `run` returns whether the
+    clip is gone, such as deleted from disk, so the viewer drops it."""
+
+    label: str
+    run: Callable[[PreviewClip], bool]
+    tooltip: str = ""
+
+
 def _frame_size(clip: PreviewClip) -> tuple[int, int] | None:
     """Pixel size of the clip's first frame, read from the PNG header alone,
     or None if the frame is unreadable."""
@@ -78,7 +90,7 @@ class ViewerWindow(QMainWindow):
     _pixmap: QPixmap
     _playing: bool
     _was_playing_before_scrub: bool
-    _missing_frames_warned: set[int]
+    _missing_frames_warned: set[PreviewClip]
     _clock: QElapsedTimer
     _clock_frame: int
     _ticker: QTimer
@@ -99,6 +111,8 @@ class ViewerWindow(QMainWindow):
     _cut_unavailable: str
     _cut_section: CutSection
     _confirm_remaining_button: QPushButton
+    _actions: Sequence[ClipAction]
+    _missing_frames: str
 
     def __init__(
         self,
@@ -107,6 +121,8 @@ class ViewerWindow(QMainWindow):
         *,
         cut: PreviewClip | None = None,
         cut_unavailable: str = "",
+        actions: Sequence[ClipAction] = (),
+        missing_frames: str = "",
     ) -> None:
         # The parent (the DCC main window) owns the viewer's lifetime; a
         # QMainWindow always carries Qt.Window, so it stays a real window
@@ -114,7 +130,8 @@ class ViewerWindow(QMainWindow):
         # reference.
         super().__init__(parent)
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
-        self._clips = clips
+        # Copied, since an action can remove a clip.
+        self._clips = list(clips)
         # Sizing only — an unreadable first frame (reported per clip on
         # playback) still deserves a sanely sized window.
         self._resolution = _frame_size(clips[0]) or DEFAULT_RESOLUTION
@@ -124,6 +141,11 @@ class ViewerWindow(QMainWindow):
         self._playing = False
         self._was_playing_before_scrub = False
         self._missing_frames_warned = set()
+        self._actions = actions
+        self._missing_frames = missing_frames or (
+            "The preview's temp files may have been cleaned up — close the "
+            "viewer and playblast again."
+        )
 
         # Playback clock: frames advance by wall-clock time, not tick count,
         # so a slow paint skips frames instead of slowing the clip down.
@@ -174,7 +196,12 @@ class ViewerWindow(QMainWindow):
         for clip in self._clips:
             item = QListWidgetItem(clip.label)
             item.setData(filmstrip.THUMB_ROLE, filmstrip.thumbnail(clip, thumb_size))
-            item.setData(filmstrip.STATUS_ROLE, PanelStatus.PENDING)
+            # Clips that are acted on, not delivered, have no status, and their
+            # labels are long.
+            if self._actions:
+                item.setToolTip(clip.label)
+            else:
+                item.setData(filmstrip.STATUS_ROLE, PanelStatus.PENDING)
             self._clip_list.addItem(item)
         self._clip_list.currentRowChanged.connect(self._go_to_clip)
 
@@ -251,11 +278,12 @@ class ViewerWindow(QMainWindow):
     def _build_confirm_panels(self) -> None:
         self._panels = []
         self._panel_stack = QStackedWidget()
-        for index, clip in enumerate(self._clips):
+        for clip in self._clips:
             panel = ConfirmPanel(clip, self._confirm_pool, self._playlists)
             panel.state_changed.connect(self._refresh_sidebar)
+            # Looked up on delivery, since an action can remove an earlier clip.
             panel.delivered.connect(
-                lambda clip_index=index: self._on_clip_delivered(clip_index)
+                lambda p=panel: self._on_clip_delivered(self._panels.index(p))
             )
             self._panels.append(panel)
             self._panel_stack.addWidget(panel)
@@ -299,6 +327,8 @@ class ViewerWindow(QMainWindow):
         # Equal-stretch side sections keep the play cluster dead-center; the
         # left one balances the loop toggle on the right.
         left = QHBoxLayout()
+        for action in self._actions:
+            left.addWidget(self._action_button(action))
         left.addStretch(1)
         row.addLayout(left, stretch=1)
 
@@ -334,6 +364,39 @@ class ViewerWindow(QMainWindow):
 
         transport.addLayout(row)
         return transport
+
+    def _action_button(self, action: ClipAction) -> QPushButton:
+        button = QPushButton(action.label)
+        button.setToolTip(action.tooltip)
+        # As with the transport buttons, Space must keep playing.
+        button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        button.clicked.connect(lambda: self._run_action(action))
+        return button
+
+    def _run_action(self, action: ClipAction) -> None:
+        index = self._current_index
+        removed = action.run(self._clips[index])
+        # A host dialog the action shows, such as Houdini's displayMessage, is
+        # the main window's, which comes back in front of the viewer once it
+        # closes.
+        self.raise_()
+        self.activateWindow()
+        if not removed:
+            return
+        self._pause()
+        if len(self._clips) == 1:
+            self.close()
+            return
+        self._clips.pop(index)
+        panel = self._panels.pop(index)
+        self._panel_stack.removeWidget(panel)
+        panel.deleteLater()
+        # Taking the row would select its neighbour and load a stale index.
+        self._clip_list.blockSignals(True)
+        self._clip_list.takeItem(index)
+        self._clip_list.blockSignals(False)
+        self._refresh_sidebar()
+        self._load_clip(min(index, len(self._clips) - 1))
 
     def _transport_button(
         self,
@@ -503,8 +566,9 @@ class ViewerWindow(QMainWindow):
             self._advance_to_next_unconfirmed()
 
     def _refresh_sidebar(self) -> None:
-        for index, panel in enumerate(self._panels):
-            self._clip_list.item(index).setData(filmstrip.STATUS_ROLE, panel.status)
+        if not self._actions:
+            for index, panel in enumerate(self._panels):
+                self._clip_list.item(index).setData(filmstrip.STATUS_ROLE, panel.status)
         self._clip_list.viewport().update()
         confirmable = [panel for panel in self._panels if panel.is_confirmable]
         self._confirm_remaining_button.setVisible(len(confirmable) > 1)
@@ -540,17 +604,15 @@ class ViewerWindow(QMainWindow):
     def _warn_missing_frames(self, path: Path) -> None:
         """Explain an unreadable frame once per clip, then go quiet — a
         modal for every frame of a broken clip would be unusable."""
-        if self._current_index in self._missing_frames_warned:
+        if self._clip() in self._missing_frames_warned:
             return
-        self._missing_frames_warned.add(self._current_index)
+        self._missing_frames_warned.add(self._clip())
         self._pause()
         QMessageBox.warning(
             self,
             "Playblast Viewer",
             f"Could not load the preview frames for {self._clip().label}.\n\n"
-            f"Missing: {path}\n\n"
-            "The preview's temp files may have been cleaned up — close the "
-            "viewer and playblast again.",
+            f"Missing: {path}\n\n{self._missing_frames}",
         )
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
@@ -622,4 +684,4 @@ class ViewerWindow(QMainWindow):
             event.ignore()
 
 
-__all__ = ["ViewerWindow"]
+__all__ = ["ClipAction", "ViewerWindow"]
