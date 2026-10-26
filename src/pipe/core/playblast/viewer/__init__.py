@@ -17,10 +17,17 @@ def open_viewer(
     cut: PreviewClip | None = None,
     cut_unavailable: str = "",
     actions: Sequence[ClipAction] = (),
+    missing_frames: str = "",
 ) -> None:
-    """Open a viewer window on `clips`"""
+    """Open a viewer window on `clips`. `missing_frames` replaces the playblast
+    advice given when a clip's frames can't be read."""
     ViewerWindow(
-        clips, parent, cut=cut, cut_unavailable=cut_unavailable, actions=actions
+        clips,
+        parent,
+        cut=cut,
+        cut_unavailable=cut_unavailable,
+        actions=actions,
+        missing_frames=missing_frames,
     ).show()
 
 

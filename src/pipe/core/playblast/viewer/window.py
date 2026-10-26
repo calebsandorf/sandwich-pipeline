@@ -112,6 +112,7 @@ class ViewerWindow(QMainWindow):
     _cut_section: CutSection
     _confirm_remaining_button: QPushButton
     _actions: Sequence[ClipAction]
+    _missing_frames: str
 
     def __init__(
         self,
@@ -121,6 +122,7 @@ class ViewerWindow(QMainWindow):
         cut: PreviewClip | None = None,
         cut_unavailable: str = "",
         actions: Sequence[ClipAction] = (),
+        missing_frames: str = "",
     ) -> None:
         # The parent (the DCC main window) owns the viewer's lifetime; a
         # QMainWindow always carries Qt.Window, so it stays a real window
@@ -140,6 +142,10 @@ class ViewerWindow(QMainWindow):
         self._was_playing_before_scrub = False
         self._missing_frames_warned = set()
         self._actions = actions
+        self._missing_frames = missing_frames or (
+            "The preview's temp files may have been cleaned up — close the "
+            "viewer and playblast again."
+        )
 
         # Playback clock: frames advance by wall-clock time, not tick count,
         # so a slow paint skips frames instead of slowing the clip down.
@@ -190,7 +196,12 @@ class ViewerWindow(QMainWindow):
         for clip in self._clips:
             item = QListWidgetItem(clip.label)
             item.setData(filmstrip.THUMB_ROLE, filmstrip.thumbnail(clip, thumb_size))
-            item.setData(filmstrip.STATUS_ROLE, PanelStatus.PENDING)
+            # Clips that are acted on, not delivered, have no status, and their
+            # labels are long.
+            if self._actions:
+                item.setToolTip(clip.label)
+            else:
+                item.setData(filmstrip.STATUS_ROLE, PanelStatus.PENDING)
             self._clip_list.addItem(item)
         self._clip_list.currentRowChanged.connect(self._go_to_clip)
 
@@ -555,8 +566,9 @@ class ViewerWindow(QMainWindow):
             self._advance_to_next_unconfirmed()
 
     def _refresh_sidebar(self) -> None:
-        for index, panel in enumerate(self._panels):
-            self._clip_list.item(index).setData(filmstrip.STATUS_ROLE, panel.status)
+        if not self._actions:
+            for index, panel in enumerate(self._panels):
+                self._clip_list.item(index).setData(filmstrip.STATUS_ROLE, panel.status)
         self._clip_list.viewport().update()
         confirmable = [panel for panel in self._panels if panel.is_confirmable]
         self._confirm_remaining_button.setVisible(len(confirmable) > 1)
@@ -600,9 +612,7 @@ class ViewerWindow(QMainWindow):
             self,
             "Playblast Viewer",
             f"Could not load the preview frames for {self._clip().label}.\n\n"
-            f"Missing: {path}\n\n"
-            "The preview's temp files may have been cleaned up — close the "
-            "viewer and playblast again.",
+            f"Missing: {path}\n\n{self._missing_frames}",
         )
 
     def keyPressEvent(self, event: QKeyEvent) -> None:

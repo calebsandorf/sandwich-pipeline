@@ -45,6 +45,8 @@ def write(path: Path) -> None:
     """Writes the session to `path`, unsaved edits included.
 
     Unlike saving, `mwrite -n` leaves the session's file name and `$HIP` alone.
+    It does mark the hip modified, and nothing clears that but a save, so every
+    Send leaves the hip modified.
     """
     _, error = hou.hscript(f'mwrite -n "{path}"')
     if error or not path.is_file():

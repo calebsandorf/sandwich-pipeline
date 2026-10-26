@@ -15,16 +15,14 @@ from pipe.dcc.houdini import runtime
 from pipe.dcc.houdini.tractor import snapshot, wedges
 
 TITLE = "Review Wedges"
+MISSING_FRAMES = (
+    "The wedge may have been deleted, or its Draw retried in Tractor, since "
+    "Review Wedges opened. Close it and press Review Wedges again."
+)
 
 
 def review(node: hou.Node) -> None:
     runs, unread = _runs(node)
-    if unread:
-        hou.ui.displayMessage(
-            "Review Wedges leaves out the runs it can't read:\n" + "\n".join(unread),
-            title=TITLE,
-            severity=hou.severityType.Warning,
-        )
     if not runs and not unread:
         hou.ui.displayMessage(
             f"No wedge run in {snapshot.folder(node)} was sent from {node.path()}. A node "
@@ -32,7 +30,6 @@ def review(node: hou.Node) -> None:
             "sends one.",
             title=TITLE,
         )
-    if not runs:
         return
     clips: list[PreviewClip] = []
     # The run and wedge of each clip, by its frames folder.
@@ -55,12 +52,12 @@ def review(node: hou.Node) -> None:
                 )
             )
             shown[frames] = (run, wedge)
+    finished = {run.folder for run, _ in shown.values()}
+    unfinished = [run for run in runs if run.folder not in finished]
+    if unfinished or unread:
+        _offer_delete(node, unfinished, unread)
+    # The offer said why there is nothing to play.
     if not clips:
-        hou.ui.displayMessage(
-            f"No wedge of {node.path()} has finished yet. Its last run is "
-            f"{runs[0].folder}. Check its job in Tractor.",
-            title=TITLE,
-        )
         return
     actions = [
         ClipAction(
@@ -74,12 +71,17 @@ def review(node: hou.Node) -> None:
             "Delete this wedge's cache and flipbook from disk.",
         ),
     ]
-    open_viewer(clips, runtime.get_main_qt_window(), actions=actions)
+    open_viewer(
+        clips,
+        runtime.get_main_qt_window(),
+        actions=actions,
+        missing_frames=MISSING_FRAMES,
+    )
 
 
-def _runs(node: hou.Node) -> tuple[list[wedges.Run], list[str]]:
-    """The node's wedge runs, newest first, and why each record that can't be
-    read wasn't."""
+def _runs(node: hou.Node) -> tuple[list[wedges.Run], list[tuple[Path, str]]]:
+    """The node's wedge runs, newest first, and the folder of each record that
+    can't be read, with why."""
     records = sorted(snapshot.folder(node).glob(f"v*/{wedges.RECORD}"), reverse=True)
     runs = []
     unread = []
@@ -87,12 +89,44 @@ def _runs(node: hou.Node) -> tuple[list[wedges.Run], list[str]]:
         try:
             run = wedges.read_record(record)
         except ValueError as error:
-            unread.append(f"{record.parent}: {error}")
+            unread.append((record.parent, str(error)))
             continue
         # Two nodes of one name share a Send folder.
         if run.node == node.path():
             runs.append(run)
     return runs, unread
+
+
+def _offer_delete(
+    node: hou.Node, unfinished: list[wedges.Run], unread: list[tuple[Path, str]]
+) -> None:
+    groups = []
+    if unfinished:
+        groups.append(
+            [f"These runs of {node.path()} have no finished wedge:"]
+            + [f'{run.folder}, job "{run.title}"' for run in unfinished]
+        )
+    if unread:
+        groups.append(
+            ["Review Wedges leaves out the runs it can't read:"]
+            + [f"{folder}: {why}" for folder, why in unread]
+        )
+    pressed = hou.ui.displayMessage(
+        "\n\n".join("\n".join(group) for group in groups)
+        + "\n\nA run whose job is still in Tractor may yet finish, and deleting "
+        "it fails the job. Check Tractor before deleting.",
+        buttons=("Delete", "Keep"),
+        default_choice=1,
+        close_choice=1,
+        title=TITLE,
+        severity=hou.severityType.Warning,
+    )
+    if pressed != 0:
+        return
+    folders = [run.folder for run in unfinished] + [folder for folder, _ in unread]
+    for folder in folders:
+        shutil.rmtree(folder)
+    hou.ui.setStatusMessage(f"Deleted {', '.join(f.name for f in folders)}")
 
 
 def _apply(run: wedges.Run, wedge: wedges.Wedge) -> bool:
@@ -122,9 +156,15 @@ def _apply(run: wedges.Run, wedge: wedges.Wedge) -> bool:
     with hou.undos.group(f"Apply wedge {name}"):
         missing = wedges.set_values(wedge)
     if missing:
+        done = [
+            line
+            for path, line in zip(wedge.values, wedges.describe(wedge), strict=True)
+            if path not in missing
+        ]
         hou.ui.displayMessage(
             f"The hip no longer has {', '.join(missing)}, so those values of "
-            f"{name} were not set.",
+            f"{name} were not set."
+            + (f" It did set {', '.join(done)}." if done else ""),
             title=TITLE,
             severity=hou.severityType.Warning,
         )

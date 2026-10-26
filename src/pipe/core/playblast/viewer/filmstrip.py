@@ -57,7 +57,7 @@ def thumbnail(clip: PreviewClip, size: QSize) -> QPixmap:
 
 
 class ClipDelegate(QStyledItemDelegate):
-    """One filmstrip row: thumbnail, clip label, and confirm status."""
+    """One filmstrip row: thumbnail, clip label, and any confirm status."""
 
     _PAD = 8
     _GAP = 8
@@ -126,10 +126,12 @@ class ClipDelegate(QStyledItemDelegate):
         selected: bool,
     ) -> None:
         # Label and status word stack as two lines, vertically centred against
-        # the thumbnail.
+        # the thumbnail. A clip with no status centres its label alone.
+        status = index.data(STATUS_ROLE)
+        lines = 1 if status is None else 2
         metrics = option.fontMetrics
         line_h = metrics.height()
-        block_top = option.rect.y() + (option.rect.height() - line_h * 2) // 2
+        block_top = option.rect.y() + (option.rect.height() - line_h * lines) // 2
         text_x = thumb_rect.right() + 1 + self._GAP
 
         label = str(index.data(Qt.ItemDataRole.DisplayRole) or "")
@@ -141,8 +143,9 @@ class ClipDelegate(QStyledItemDelegate):
         )
         painter.setPen(option.palette.color(role))
         painter.drawText(text_x, block_top + metrics.ascent(), label)
+        if status is None:
+            return
 
-        status = index.data(STATUS_ROLE)
         color = _status_color(status, option.palette)
         baseline = block_top + line_h + metrics.ascent()
         dot_cx = text_x + self._DOT_R
